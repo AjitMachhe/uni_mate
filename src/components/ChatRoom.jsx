@@ -28,14 +28,23 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
   const [isRenaming, setIsRenaming] = useState(false);
   const [editedName, setEditedName] = useState(group.name);
 
+  const messagesContainerRef = useRef(null);
   const bottomRef = useRef(null);
 
   const canManage = currentUser.role === 'admin' || currentUser.role === 'staff';
   const isAdmin = currentUser.role === 'admin';
 
-  // Auto-scroll smoothly when new messages arrive
+  const scrollToBottom = () => {
+    requestAnimationFrame(() => {
+      if (messagesContainerRef.current) {
+        messagesContainerRef.current.scrollTop = messagesContainerRef.current.scrollHeight;
+      }
+      bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    });
+  };
+
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    scrollToBottom();
   }, [messages]);
 
   useEffect(() => {
@@ -189,12 +198,13 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
     setText('');
     setFile(null);
     setUploading(false);
-    fetchMessages();
+    await fetchMessages();
+    scrollToBottom();
   }
 
   return (
     <div className="flex flex-col h-full bg-slate-50">
-      {/* Header (Color-coded by logged-in user's role) */}
+      {/* Header */}
       <div className={`${roomTheme.headerBg} text-white px-4 py-3 flex items-center justify-between shadow-md gap-2`}>
         <div className="min-w-0 flex-1">
           {isRenaming && canManage ? (
@@ -336,17 +346,17 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
         </div>
       )}
 
-      {/* Messages Feed (Color-coded border by sender: Maroon = Admin, Indigo = Staff) */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4">
+      {/* Messages Feed */}
+      <div ref={messagesContainerRef} className="flex-1 overflow-y-auto p-4 space-y-4">
         {messages.map((msg) => {
           const isMsgAdmin = msg.profiles?.role === 'admin';
           return (
-       <div
-           key={msg.id}
-           className={`bg-white rounded-r-lg rounded-l-none p-4 shadow-sm border-l-4 max-w-2xl ${
-             isMsgAdmin ? 'border-l-[#800000] border border-red-100' : 'border-l-indigo-700 border border-indigo-100'
-           }`}
-         >
+            <div
+              key={msg.id}
+              className={`bg-white rounded-r-lg rounded-l-none p-4 shadow-sm border-l-4 max-w-2xl ${
+                isMsgAdmin ? 'border-l-[#800000] border border-red-100' : 'border-l-indigo-700 border border-indigo-100'
+              }`}
+            >
               <div className="flex items-center justify-between mb-1.5">
                 <span className={`text-xs font-bold ${isMsgAdmin ? 'text-[#800000]' : 'text-indigo-800'}`}>
                   {msg.profiles?.full_name} •{' '}
@@ -362,10 +372,20 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
               {msg.media_url && (
                 <div className="mt-2 bg-slate-50 p-3 rounded-xl border border-slate-200">
                   {msg.media_type === 'image' && (
-                    <img src={msg.media_url} alt="attachment" className="rounded-lg max-h-64 object-cover mb-2" />
+                    <img
+                      src={msg.media_url}
+                      alt="attachment"
+                      onLoad={scrollToBottom}
+                      className="rounded-lg max-h-64 object-cover mb-2"
+                    />
                   )}
                   {msg.media_type === 'video' && (
-                    <video src={msg.media_url} controls className="rounded-lg max-h-64 w-full mb-2" />
+                    <video
+                      src={msg.media_url}
+                      controls
+                      onLoadedMetadata={scrollToBottom}
+                      className="rounded-lg max-h-64 w-full mb-2"
+                    />
                   )}
                   {msg.media_type === 'audio' && (
                     <audio src={msg.media_url} controls className="w-full mb-2" />

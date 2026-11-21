@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from '../supabaseClient';
 import {
   Send, Paperclip, Download, Users, ShieldCheck, FileText,
-  UserPlus, Trash2, Search, Pencil, Check, X, Pin, Lock
+  UserPlus, Trash2, Search, Pencil, Check, X, Pin, Lock, Eye
 } from 'lucide-react';
 
 const ROOM_THEMES = {
@@ -16,6 +16,8 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
   const roomTheme = ROOM_THEMES[currentUser.role] || ROOM_THEMES.student;
 
   const [messages, setMessages] = useState([]);
+  const [readsByMessage, setReadsByMessage] = useState({});
+  const [expandedReadsMsgId, setExpandedReadsMsgId] = useState(null);
   const [members, setMembers] = useState([]);
   const [allUsers, setAllUsers] = useState([]);
   const [searchTerm, setSearchTerm] = useState('');
@@ -44,12 +46,13 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
 
   useEffect(() => {
     scrollToBottom();
-  }, [messages]);
+  }, [messages.length]);
 
   useEffect(() => {
     setEditedName(group.name);
     setIsRenaming(false);
     setShowMembers(false);
+    setExpandedReadsMsgId(null);
     fetchMessages();
     fetchMembers();
     if (canManage) {
@@ -65,6 +68,13 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
         { event: '*', schema: 'public', table: 'messages', filter: `group_id=eq.${group.id}` },
         () => fetchMessages()
       )
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'message_reads' },
+        () => {
+          if (canManage) fetchReadsForGroup();
+        }
+      )
       .subscribe();
 
     return () => supabase.removeChannel(channel);
@@ -76,7 +86,47 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
       .select('*, profiles(full_name, designation, role)')
       .eq('group_id', group.id)
       .order('created_at', { ascending: true });
-    if (data) setMessages(data);
+
+    if (data) {
+      setMessages(data);
+      markMessagesAsRead(data);
+      if (canManage) fetchReadsForGroup(data.map((m) => m.id));
+    }
+  }
+
+  async function markMessagesAsRead(msgList) {
+    const unreadFromOthers = msgList.filter((m) => m.sender_id !== currentUser.id);
+    if (unreadFromOthers.length === 0) return;
+
+    const rows = unreadFromOthers.map((m) => ({
+      message_id: m.id,
+      user_id: currentUser.id,
+    }));
+
+    await supabase
+      .from('message_reads')
+      .upsert(rows, { onConflict: 'message_id,user_id', ignoreDuplicates: true });
+  }
+
+  async function fetchReadsForGroup(messageIdsOverride) {
+    if (!canManage) return;
+    const ids = messageIdsOverride || messages.map((m) => m.id);
+    if (ids.length === 0) return;
+
+    const { data } = await supabase
+      .from('message_reads')
+      .select('message_id, read_at, user_id, profiles(full_name, role, designation, department)')
+      .in('message_id', ids)
+      .order('read_at', { ascending: true });
+
+    if (data) {
+      const grouped = {};
+      data.forEach((row) => {
+        if (!grouped[row.message_id]) grouped[row.message_id] = [];
+        grouped[row.message_id].push(row);
+      });
+      setReadsByMessage(grouped);
+    }
   }
 
   async function fetchMembers() {
@@ -161,7 +211,6 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
   const availableUsers = canManage
     ? allUsers.filter((u) => {
         if (memberIds.has(u.id)) return false;
-        // If Staff-Only channel, only allow adding Staff or Admin
         if (group.is_staff_only && u.role !== 'staff' && u.role !== 'admin') return false;
         return (
           u.full_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -388,6 +437,9 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
       <div ref={messagesContainerRef} className="flex-1 overflow-y-auto p-4 space-y-4">
         {messages.map((msg) => {
           const isMsgAdmin = msg.profiles?.role === 'admin';
+          const readers = readsByMessage[msg.id] || [];
+          const isReadersExpanded = expandedReadsMsgId === msg.id;
+
           return (
             <div
               key={msg.id}
@@ -465,6 +517,42 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
                       <Download size={14} /> Save
                     </a>
                   </div>
+                </div>
+              )}
+
+              {/* Seen By Read Receipts (ONLY visible to Staff & Admin) */}
+              {canManage && (
+                <div className="mt-2.5 pt-2 border-t border-slate-100">
+                  <button
+                    type="button"
+                    onClick={() => setExpandedReadsMsgId(isReadersExpanded ? null : msg.id)}
+                    className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-slate-500 hover:text-slate-800 transition"
+                  >
+                    <Eye size={13} className="text-emerald-600" />
+                    <span>
+                      Seen by {readers.length} {readers.length === 1 ? 'member' : 'members'}
+                    </span>
+                  </button>
+
+                  {isReadersExpanded && (
+                    <div className="mt-2 bg-slate-50 rounded-lg p-2.5 border border-slate-200 space-y-1 max-h-36 overflow-y-auto">
+                      {readers.length === 0 ? (
+                        <p className="text-[11px] text-slate-400">No members have opened this message yet.</p>
+                      ) : (
+                        readers.map((r) => (
+                          <div key={r.user_id} className="flex items-center justify-between text-[11px]">
+                            <span className="font-medium text-slate-700">
+                              {r.profiles?.full_name}{' '}
+                              <span className="text-slate-400">({r.profiles?.role})</span>
+                            </span>
+                            <span className="text-slate-400">
+                              {new Date(r.read_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            </span>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
             </div>

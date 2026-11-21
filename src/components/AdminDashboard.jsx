@@ -152,6 +152,28 @@ export default function AdminDashboard({ onGroupsChanged }) {
     }
   }
 
+  async function handleDeleteUser(userObj) {
+    if (userObj.role === 'admin') {
+      alert('Super Admin accounts cannot be deleted here.');
+      return;
+    }
+    if (!window.confirm(`Permanently delete user "${userObj.full_name}"? They will immediately lose login access.`)) {
+      return;
+    }
+
+    const { error } = await supabase.rpc('admin_delete_user', {
+      target_user_id: userObj.id,
+    });
+
+    if (error) {
+      alert(`Failed to delete user: ${error.message}`);
+    } else {
+      loadAdminData();
+      if (onGroupsChanged) onGroupsChanged();
+    }
+  }
+
+
   async function updateRequestStatus(id, status) {
     await supabase.from('access_requests').update({ status }).eq('id', id);
     loadAdminData();
@@ -314,6 +336,8 @@ export default function AdminDashboard({ onGroupsChanged }) {
                 <th className="py-2.5 px-3">Role</th>
                 <th className="py-2.5 px-3">Designation</th>
                 <th className="py-2.5 px-3">Department</th>
+                <th className="py-2.5 px-3 text-right">Action</th>
+
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -339,6 +363,17 @@ export default function AdminDashboard({ onGroupsChanged }) {
                     </td>
                     <td className="py-2.5 px-3 text-slate-600">{p.designation || '-'}</td>
                     <td className="py-2.5 px-3 text-slate-600">{p.department || '-'}</td>
+                    <td className="py-2.5 px-3 text-right">
+                 {p.role !== 'admin' && (
+                   <button
+                     onClick={() => handleDeleteUser(p)}
+                     title={`Delete ${p.full_name}`}
+                     className="text-slate-400 hover:text-red-600 p-1 rounded hover:bg-red-50 transition"
+                   >
+                     <Trash2 size={14} />
+                   </button>
+                 )}
+               </td>
                   </tr>
                 );
               })}

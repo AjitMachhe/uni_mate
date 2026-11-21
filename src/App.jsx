@@ -5,7 +5,7 @@ import ChatRoom from './components/ChatRoom';
 import AdminDashboard from './components/AdminDashboard';
 import {
   LogOut, Plus, Shield, MessageCircle, Menu, X,
-  GraduationCap, Bell, Lock, KeyRound, UserCheck
+  GraduationCap, Bell, Lock, KeyRound, UserCheck, Trash2
 } from 'lucide-react';
 
 const ROLE_THEMES = {
@@ -130,6 +130,16 @@ export default function App() {
         { event: '*', schema: 'public', table: 'group_members', filter: `user_id=eq.${profile.id}` },
         () => loadGroups()
       )
+      .on(
+        'postgres_changes',
+        { event: 'DELETE', schema: 'public', table: 'groups' },
+        (payload) => {
+          if (activeGroupRef.current?.id === payload.old.id) {
+            setActiveGroup(null);
+          }
+          loadGroups();
+        }
+      )
       .subscribe();
 
     return () => supabase.removeChannel(globalChannel);
@@ -172,7 +182,6 @@ export default function App() {
     setProfile(data);
     loadGroups();
 
-    // Load fellow Staff & Admin colleagues ONLY if logged-in user is Staff or Admin
     if (data.role === 'admin' || data.role === 'staff') {
       const { data: staffList } = await supabase
         .from('profiles')
@@ -188,19 +197,20 @@ export default function App() {
     const { data } = await supabase.from('groups').select('*').order('created_at', { ascending: false });
     if (data) {
       setGroups(data);
-      if (data.length > 0 && !activeGroupRef.current) setActiveGroup(data[0]);
+      const regularOnly = data.filter((g) => !g.description?.startsWith('dm:'));
+      if (regularOnly.length > 0 && !activeGroupRef.current) {
+        setActiveGroup(regularOnly[0]);
+      }
     }
   }
 
   // Start or open a private 1-on-1 Staff Chat with a colleague
-async function handleStartDirectStaffChat(colleague) {
+  async function handleStartDirectStaffChat(colleague) {
     const pairKey = [profile.id, colleague.id].sort().join('_');
     const dmTag = `dm:${pairKey}`;
 
-    // 1. Check in-memory groups first
     let existing = groups.find((g) => g.description === dmTag);
 
-    // 2. Double-check database in case it wasn't loaded yet
     if (!existing) {
       const { data: found } = await supabase
         .from('groups')
@@ -215,7 +225,6 @@ async function handleStartDirectStaffChat(colleague) {
       return;
     }
 
-    // 3. Create new private 1-on-1 Staff Chat
     const chatTitle = `${profile.full_name} ↔ ${colleague.full_name}`;
     const { data: newDm, error: grpError } = await supabase
       .from('groups')
@@ -249,6 +258,17 @@ async function handleStartDirectStaffChat(colleague) {
     await loadGroups();
     selectGroup(newDm);
   }
+
+  async function handleDeleteDirectChat(e, dmGroup) {
+    e.stopPropagation();
+    if (!window.confirm('Delete this 1-on-1 chat history permanently?')) return;
+    const { error } = await supabase.from('groups').delete().eq('id', dmGroup.id);
+    if (!error) {
+      if (activeGroup?.id === dmGroup.id) setActiveGroup(null);
+      setGroups((prev) => prev.filter((g) => g.id !== dmGroup.id));
+    }
+  }
+
   async function handleCreateGroup(e) {
     e.preventDefault();
     if (!newGroupName.trim()) return;
@@ -329,6 +349,10 @@ async function handleStartDirectStaffChat(colleague) {
   const isStaffOrAdmin = profile.role === 'admin' || profile.role === 'staff';
   const theme = ROLE_THEMES[profile.role] || ROLE_THEMES.student;
   const totalUnread = Object.values(unreadCounts).reduce((a, b) => a + b, 0);
+
+  // Separate formal groups from 1-on-1 direct chats
+  const regularGroups = groups.filter((g) => !g.description?.startsWith('dm:'));
+  const directChats = groups.filter((g) => g.description?.startsWith('dm:'));
 
   return (
     <div className="h-screen flex flex-col md:flex-row bg-slate-100 overflow-hidden relative">
@@ -485,9 +509,9 @@ async function handleStartDirectStaffChat(colleague) {
             </form>
           )}
 
-          {/* Groups List */}
+          {/* Formal Groups List (Excludes 1-on-1 DMs) */}
           <div className="px-3 space-y-1">
-            {groups.map((grp) => {
+            {regularGroups.map((grp) => {
               const unread = unreadCounts[grp.id] || 0;
               const isSelected = !viewAdmin && activeGroup?.id === grp.id;
 
@@ -508,7 +532,7 @@ async function handleStartDirectStaffChat(colleague) {
                     <div className="truncate">
                       <p className="text-sm font-semibold truncate">{grp.name}</p>
                       <p className={`text-[11px] truncate ${isSelected ? 'text-white/80' : 'text-slate-400'}`}>
-                        {grp.is_staff_only ? 'Staff-Only Chat' : grp.department || 'University Broadcast'}
+                        {grp.is_staff_only ? 'Staff-Only Channel' : grp.department || 'University Broadcast'}
                       </p>
                     </div>
                   </div>
@@ -523,35 +547,68 @@ async function handleStartDirectStaffChat(colleague) {
             })}
           </div>
 
-          {/* Direct Staff-to-Staff Chat Directory (ONLY visible to Staff & Admin) */}
+          {/* Direct 1-on-1 Staff Chat Section (Separated cleanly from Groups) */}
           {isStaffOrAdmin && colleagues.length > 0 && (
             <div className="mt-5 pt-4 border-t border-slate-100">
               <div className="px-4 pb-2">
                 <span className="text-xs font-bold uppercase tracking-wider text-indigo-800 flex items-center gap-1.5">
-                  <UserCheck size={14} /> Direct Staff Chat
+                  <UserCheck size={14} /> Direct 1-on-1 Staff Chat
                 </span>
-                <p className="text-[10px] text-slate-400">Private 1-on-1 faculty & admin messaging</p>
+                <p className="text-[10px] text-slate-400">Private colleague messages (separate from groups)</p>
               </div>
               <div className="px-3 pb-4 space-y-1">
-                {colleagues.map((col) => (
-                  <button
-                    key={col.id}
-                    onClick={() => handleStartDirectStaffChat(col)}
-                    className="w-full text-left px-3 py-2 rounded-xl hover:bg-indigo-50 flex items-center justify-between transition group"
-                  >
-                    <div className="min-w-0">
-                      <p className="text-xs font-bold text-slate-800 group-hover:text-indigo-900 truncate">
-                        {col.full_name}
-                      </p>
-                      <p className="text-[10px] text-slate-500 truncate">
-                        {col.designation || col.role} {col.department ? `• ${col.department}` : ''}
-                      </p>
+                {colleagues.map((col) => {
+                  const pairKey = [profile.id, col.id].sort().join('_');
+                  const dmGroup = directChats.find((g) => g.description === `dm:${pairKey}`);
+                  const isDmSelected = !viewAdmin && dmGroup && activeGroup?.id === dmGroup.id;
+                  const dmUnread = dmGroup ? unreadCounts[dmGroup.id] || 0 : 0;
+
+                  return (
+                    <div
+                      key={col.id}
+                      onClick={() => handleStartDirectStaffChat(col)}
+                      className={`w-full cursor-pointer px-3 py-2 rounded-xl flex items-center justify-between transition ${
+                        isDmSelected
+                          ? 'bg-indigo-900 text-white shadow-sm'
+                          : 'hover:bg-indigo-50 text-slate-800'
+                      }`}
+                    >
+                      <div className="min-w-0 pr-2">
+                        <p className={`text-xs font-bold truncate ${isDmSelected ? 'text-white' : 'text-slate-800'}`}>
+                          {col.full_name}
+                        </p>
+                        <p className={`text-[10px] truncate ${isDmSelected ? 'text-indigo-200' : 'text-slate-500'}`}>
+                          {col.designation || col.role} {col.department ? `• ${col.department}` : ''}
+                        </p>
+                      </div>
+
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        {dmUnread > 0 && !isDmSelected && (
+                          <span className="bg-amber-500 text-slate-950 text-[10px] font-extrabold px-1.5 py-0.5 rounded-full">
+                            {dmUnread}
+                          </span>
+                        )}
+                        {dmGroup ? (
+                          <button
+                            onClick={(e) => handleDeleteDirectChat(e, dmGroup)}
+                            title="Delete 1-on-1 chat"
+                            className={`p-1 rounded-lg transition ${
+                              isDmSelected
+                                ? 'text-indigo-200 hover:text-white hover:bg-white/15'
+                                : 'text-slate-400 hover:text-red-600 hover:bg-red-50'
+                            }`}
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        ) : (
+                          <span className="text-[10px] bg-indigo-100 text-indigo-800 px-2 py-0.5 rounded-full font-semibold">
+                            Chat
+                          </span>
+                        )}
+                      </div>
                     </div>
-                    <span className="text-[10px] bg-indigo-100 text-indigo-800 px-2 py-0.5 rounded-full font-semibold shrink-0">
-                      Chat
-                    </span>
-                  </button>
-                ))}
+                  );
+                })}
               </div>
             </div>
           )}
@@ -578,7 +635,7 @@ async function handleStartDirectStaffChat(colleague) {
         ) : (
           <div className="flex-1 flex items-center justify-center text-slate-400 text-sm p-6 text-center">
             {isStaffOrAdmin
-              ? 'Create a group or click any colleague under Direct Staff Chat to start messaging.'
+              ? 'Select a group or click any colleague under Direct 1-on-1 Staff Chat.'
               : 'You have not been added to any department groups yet.'}
           </div>
         )}

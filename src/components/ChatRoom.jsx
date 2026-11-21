@@ -34,6 +34,7 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
 
   const canManage = currentUser.role === 'admin' || currentUser.role === 'staff';
   const isAdmin = currentUser.role === 'admin';
+  const isDirectChat = group.description?.startsWith('dm:');
 
   const scrollToBottom = () => {
     requestAnimationFrame(() => {
@@ -55,7 +56,7 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
     setExpandedReadsMsgId(null);
     fetchMessages();
     fetchMembers();
-    if (canManage) {
+    if (canManage && !isDirectChat) {
       fetchAllProfiles();
     } else {
       setAllUsers([]);
@@ -177,7 +178,11 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
   }
 
   async function handleDeleteGroup() {
-    if (!window.confirm(`Permanently delete "${group.name}" and all its messages?`)) return;
+    const confirmMsg = isDirectChat
+      ? 'Permanently delete this 1-on-1 chat history?'
+      : `Permanently delete "${group.name}" and all its messages?`;
+    if (!window.confirm(confirmMsg)) return;
+
     const { error } = await supabase.from('groups').delete().eq('id', group.id);
     if (!error && onGroupDeleted) {
       onGroupDeleted(group.id);
@@ -185,7 +190,7 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
   }
 
   async function handleAddMember(userId) {
-    if (!canManage) return;
+    if (!canManage || isDirectChat) return;
     const { error } = await supabase
       .from('group_members')
       .insert([{ group_id: group.id, user_id: userId }]);
@@ -193,7 +198,7 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
   }
 
   async function handleRemoveMember(userId) {
-    if (!canManage) return;
+    if (!canManage || isDirectChat) return;
     if (userId === currentUser.id) return;
     await supabase
       .from('group_members')
@@ -268,7 +273,7 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
       {/* Header */}
       <div className={`${roomTheme.headerBg} text-white px-4 py-3 flex items-center justify-between shadow-md gap-2`}>
         <div className="min-w-0 flex-1">
-          {isRenaming && canManage ? (
+          {isRenaming && canManage && !isDirectChat ? (
             <div className="flex items-center gap-1.5">
               <input
                 type="text"
@@ -288,7 +293,7 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
             <div className="flex items-center gap-2">
               {group.is_staff_only && <Lock size={15} className="text-amber-300 shrink-0" />}
               <h2 className="font-bold text-lg leading-tight truncate">{group.name}</h2>
-              {canManage && (
+              {canManage && !isDirectChat && (
                 <button
                   onClick={() => setIsRenaming(true)}
                   title="Rename group"
@@ -300,7 +305,9 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
             </div>
           )}
           <p className="text-xs text-white/80">
-            {group.is_staff_only
+            {isDirectChat
+              ? 'Private 1-on-1 Direct Staff Chat'
+              : group.is_staff_only
               ? `Private Staff Discussion • ${members.length} Faculty`
               : canManage
               ? `${members.length} Total Members`
@@ -309,18 +316,20 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
         </div>
 
         <div className="flex items-center gap-2 shrink-0">
-          <button
-            onClick={() => setShowMembers(!showMembers)}
-            className="flex items-center gap-1.5 bg-white/15 hover:bg-white/25 px-3 py-1.5 rounded-full text-xs font-medium transition"
-          >
-            <Users size={15} />
-            <span>{canManage ? 'Manage Members' : 'Faculty'}</span>
-          </button>
+          {!isDirectChat && (
+            <button
+              onClick={() => setShowMembers(!showMembers)}
+              className="flex items-center gap-1.5 bg-white/15 hover:bg-white/25 px-3 py-1.5 rounded-full text-xs font-medium transition"
+            >
+              <Users size={15} />
+              <span>{canManage ? 'Manage Members' : 'Faculty'}</span>
+            </button>
+          )}
 
-          {(isAdmin || group.created_by === currentUser.id) && (
+          {(isAdmin || group.created_by === currentUser.id || isDirectChat) && (
             <button
               onClick={handleDeleteGroup}
-              title="Delete group"
+              title={isDirectChat ? 'Delete 1-on-1 chat' : 'Delete group'}
               className="p-2 bg-black/25 hover:bg-red-700 text-white/90 hover:text-white rounded-full transition"
             >
               <Trash2 size={15} />
@@ -347,8 +356,8 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
         </div>
       )}
 
-      {/* Collapsible Member Drawer */}
-      {showMembers && (
+      {/* Collapsible Member Drawer (Hidden for 1-on-1 DMs) */}
+      {showMembers && !isDirectChat && (
         <div className="bg-white border-b border-slate-200 p-4 shadow-inner max-h-80 overflow-y-auto space-y-4">
           {canManage && (
             <div className="bg-slate-50 p-3 rounded-xl border border-slate-200">
@@ -465,7 +474,7 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
                   <span className="text-[11px] text-slate-400">
                     {new Date(msg.created_at).toLocaleDateString()}
                   </span>
-                  {canManage && (
+                  {canManage && !isDirectChat && (
                     <button
                       onClick={() => handleTogglePin(msg)}
                       title={msg.is_pinned ? 'Unpin message' : 'Pin notice to top'}
@@ -520,7 +529,7 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
                 </div>
               )}
 
-              {/* Seen By Read Receipts (ONLY visible to Staff & Admin) */}
+              {/* Seen By Read Receipts */}
               {canManage && (
                 <div className="mt-2.5 pt-2 border-t border-slate-100">
                   <button
@@ -561,7 +570,7 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
         <div ref={bottomRef} />
       </div>
 
-      {/* Input Area: ONLY visible to Staff & Admin */}
+      {/* Input Area */}
       {canManage ? (
         <form onSubmit={handleSend} className="p-3 bg-white border-t border-slate-200 flex items-center gap-2">
           <label className="cursor-pointer p-2 text-slate-500 hover:text-slate-800 rounded-full hover:bg-slate-100">
@@ -577,7 +586,13 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
             type="text"
             value={text}
             onChange={(e) => setText(e.target.value)}
-            placeholder={file ? `Attached: ${file.name}` : 'Post announcement or circular...'}
+            placeholder={
+              file
+                ? `Attached: ${file.name}`
+                : isDirectChat
+                ? 'Write a private message...'
+                : 'Post announcement or circular...'
+            }
             className="flex-1 bg-slate-100 rounded-full px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
           />
           <button

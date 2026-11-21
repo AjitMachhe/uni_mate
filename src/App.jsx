@@ -193,23 +193,36 @@ export default function App() {
   }
 
   // Start or open a private 1-on-1 Staff Chat with a colleague
-  async function handleStartDirectStaffChat(colleague) {
-    // Check if a direct chat already exists between these two staff members
+async function handleStartDirectStaffChat(colleague) {
     const pairKey = [profile.id, colleague.id].sort().join('_');
-    const existing = groups.find((g) => g.description === `dm:${pairKey}`);
+    const dmTag = `dm:${pairKey}`;
+
+    // 1. Check in-memory groups first
+    let existing = groups.find((g) => g.description === dmTag);
+
+    // 2. Double-check database in case it wasn't loaded yet
+    if (!existing) {
+      const { data: found } = await supabase
+        .from('groups')
+        .select('*')
+        .eq('description', dmTag)
+        .maybeSingle();
+      if (found) existing = found;
+    }
 
     if (existing) {
       selectGroup(existing);
       return;
     }
 
+    // 3. Create new private 1-on-1 Staff Chat
     const chatTitle = `${profile.full_name} ↔ ${colleague.full_name}`;
-    const { data: newDm, error } = await supabase
+    const { data: newDm, error: grpError } = await supabase
       .from('groups')
       .insert([
         {
           name: chatTitle,
-          description: `dm:${pairKey}`,
+          description: dmTag,
           department: 'Direct Staff Chat',
           created_by: profile.id,
           is_staff_only: true,
@@ -218,16 +231,24 @@ export default function App() {
       .select()
       .single();
 
-    if (!error && newDm) {
-      await supabase.from('group_members').insert([
-        { group_id: newDm.id, user_id: profile.id },
-        { group_id: newDm.id, user_id: colleague.id },
-      ]);
-      await loadGroups();
-      selectGroup(newDm);
+    if (grpError) {
+      alert(`Could not start chat: ${grpError.message}`);
+      return;
     }
-  }
 
+    const { error: memError } = await supabase.from('group_members').insert([
+      { group_id: newDm.id, user_id: profile.id },
+      { group_id: newDm.id, user_id: colleague.id },
+    ]);
+
+    if (memError) {
+      alert(`Chat created, but adding colleague failed: ${memError.message}`);
+      return;
+    }
+
+    await loadGroups();
+    selectGroup(newDm);
+  }
   async function handleCreateGroup(e) {
     e.preventDefault();
     if (!newGroupName.trim()) return;

@@ -3,7 +3,10 @@ import { supabase } from './supabaseClient';
 import AuthScreen from './components/AuthScreen';
 import ChatRoom from './components/ChatRoom';
 import AdminDashboard from './components/AdminDashboard';
-import { LogOut, Plus, Shield, MessageCircle, Menu, X, GraduationCap, Bell, Lock, KeyRound } from 'lucide-react';
+import {
+  LogOut, Plus, Shield, MessageCircle, Menu, X,
+  GraduationCap, Bell, Lock, KeyRound, UserCheck
+} from 'lucide-react';
 
 const ROLE_THEMES = {
   admin: {
@@ -45,6 +48,7 @@ export default function App() {
   const [profile, setProfile] = useState(null);
   const [profileError, setProfileError] = useState('');
   const [groups, setGroups] = useState([]);
+  const [colleagues, setColleagues] = useState([]);
   const [activeGroup, setActiveGroup] = useState(null);
   const [viewAdmin, setViewAdmin] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -79,6 +83,7 @@ export default function App() {
       else {
         setProfile(null);
         setGroups([]);
+        setColleagues([]);
       }
     });
 
@@ -114,7 +119,7 @@ export default function App() {
           setTimeout(() => setToastAlert(null), 5000);
 
           if ('Notification' in window && Notification.permission === 'granted' && document.hidden) {
-            new Notification('uni_mate • New Announcement', {
+            new Notification('uni_mate • New Message', {
               body: newMsg.content || `New file shared: ${newMsg.file_name}`,
             });
           }
@@ -166,6 +171,17 @@ export default function App() {
     }
     setProfile(data);
     loadGroups();
+
+    // Load fellow Staff & Admin colleagues ONLY if logged-in user is Staff or Admin
+    if (data.role === 'admin' || data.role === 'staff') {
+      const { data: staffList } = await supabase
+        .from('profiles')
+        .select('id, full_name, designation, department, role')
+        .in('role', ['admin', 'staff'])
+        .neq('id', userId)
+        .order('full_name', { ascending: true });
+      if (staffList) setColleagues(staffList);
+    }
   }
 
   async function loadGroups() {
@@ -173,6 +189,42 @@ export default function App() {
     if (data) {
       setGroups(data);
       if (data.length > 0 && !activeGroupRef.current) setActiveGroup(data[0]);
+    }
+  }
+
+  // Start or open a private 1-on-1 Staff Chat with a colleague
+  async function handleStartDirectStaffChat(colleague) {
+    // Check if a direct chat already exists between these two staff members
+    const pairKey = [profile.id, colleague.id].sort().join('_');
+    const existing = groups.find((g) => g.description === `dm:${pairKey}`);
+
+    if (existing) {
+      selectGroup(existing);
+      return;
+    }
+
+    const chatTitle = `${profile.full_name} ↔ ${colleague.full_name}`;
+    const { data: newDm, error } = await supabase
+      .from('groups')
+      .insert([
+        {
+          name: chatTitle,
+          description: `dm:${pairKey}`,
+          department: 'Direct Staff Chat',
+          created_by: profile.id,
+          is_staff_only: true,
+        },
+      ])
+      .select()
+      .single();
+
+    if (!error && newDm) {
+      await supabase.from('group_members').insert([
+        { group_id: newDm.id, user_id: profile.id },
+        { group_id: newDm.id, user_id: colleague.id },
+      ]);
+      await loadGroups();
+      selectGroup(newDm);
     }
   }
 
@@ -299,7 +351,7 @@ export default function App() {
         <div className="fixed bottom-16 right-4 z-50 bg-slate-900 text-white px-4 py-3 rounded-2xl shadow-xl border border-amber-400/40 flex items-center gap-3 max-w-xs animate-bounce">
           <Bell size={18} className="text-amber-400 shrink-0" />
           <div className="text-xs truncate">
-            <p className="font-bold text-amber-300">New Announcement</p>
+            <p className="font-bold text-amber-300">New Message</p>
             <p className="truncate text-slate-200">{toastAlert}</p>
           </div>
         </div>
@@ -371,82 +423,117 @@ export default function App() {
           </div>
         )}
 
-        {/* Group List Header */}
-        <div className="px-4 pt-4 pb-2 flex items-center justify-between">
-          <span className="text-xs font-bold uppercase tracking-wider text-slate-400">Channels & Groups</span>
-          {isStaffOrAdmin && (
-            <button
-              onClick={() => setShowNewGroup(!showNewGroup)}
-              className={`text-xs flex items-center gap-1 font-bold hover:underline ${theme.userTitle}`}
-            >
-              <Plus size={14} /> New Group
-            </button>
-          )}
-        </div>
-
-        {showNewGroup && (
-          <form onSubmit={handleCreateGroup} className="px-4 pb-3 space-y-2">
-            <div className="flex gap-1.5">
-              <input
-                type="text"
-                placeholder="e.g. CSE TY Notices"
-                value={newGroupName}
-                onChange={(e) => setNewGroupName(e.target.value)}
-                className="flex-1 px-3 py-1.5 text-xs border border-slate-300 rounded-lg focus:outline-none focus:border-slate-500"
-              />
-              <button type="submit" className={`${theme.headerBg} text-white text-xs px-3 py-1.5 rounded-lg font-semibold`}>
-                Add
-              </button>
-            </div>
-            <label className="flex items-center gap-2 text-[11px] text-slate-600 cursor-pointer select-none">
-              <input
-                type="checkbox"
-                checked={isStaffOnlyGroup}
-                onChange={(e) => setIsStaffOnlyGroup(e.target.checked)}
-                className="rounded border-slate-300"
-              />
-              <Lock size={12} className="text-indigo-700" />
-              <span>Staff-Only Channel (Faculty & Admin discussion)</span>
-            </label>
-          </form>
-        )}
-
-        {/* Groups List */}
-        <div className="flex-1 overflow-y-auto px-3 space-y-1">
-          {groups.map((grp) => {
-            const unread = unreadCounts[grp.id] || 0;
-            const isSelected = !viewAdmin && activeGroup?.id === grp.id;
-
-            return (
+        <div className="flex-1 overflow-y-auto">
+          {/* Group List Header */}
+          <div className="px-4 pt-4 pb-2 flex items-center justify-between">
+            <span className="text-xs font-bold uppercase tracking-wider text-slate-400">Channels & Groups</span>
+            {isStaffOrAdmin && (
               <button
-                key={grp.id}
-                onClick={() => selectGroup(grp)}
-                className={`w-full text-left px-3 py-3 rounded-xl flex items-center justify-between transition ${
-                  isSelected ? theme.activeItem : 'text-slate-700 hover:bg-slate-100'
-                }`}
+                onClick={() => setShowNewGroup(!showNewGroup)}
+                className={`text-xs flex items-center gap-1 font-bold hover:underline ${theme.userTitle}`}
               >
-                <div className="flex items-center gap-3 min-w-0">
-                  {grp.is_staff_only ? (
-                    <Lock size={17} className={isSelected ? 'text-amber-300 shrink-0' : 'text-indigo-700 shrink-0'} />
-                  ) : (
-                    <MessageCircle size={18} className={isSelected ? 'text-amber-300 shrink-0' : `${theme.iconColor} shrink-0`} />
-                  )}
-                  <div className="truncate">
-                    <p className="text-sm font-semibold truncate">{grp.name}</p>
-                    <p className={`text-[11px] truncate ${isSelected ? 'text-white/80' : 'text-slate-400'}`}>
-                      {grp.is_staff_only ? 'Staff-Only Channel' : grp.department || 'University Broadcast'}
-                    </p>
-                  </div>
-                </div>
-
-                {unread > 0 && !isSelected && (
-                  <span className="bg-amber-500 text-slate-950 text-[11px] font-extrabold px-2 py-0.5 rounded-full shrink-0">
-                    {unread}
-                  </span>
-                )}
+                <Plus size={14} /> New Group
               </button>
-            );
-          })}
+            )}
+          </div>
+
+          {showNewGroup && (
+            <form onSubmit={handleCreateGroup} className="px-4 pb-3 space-y-2">
+              <div className="flex gap-1.5">
+                <input
+                  type="text"
+                  placeholder="e.g. CSE TY Notices"
+                  value={newGroupName}
+                  onChange={(e) => setNewGroupName(e.target.value)}
+                  className="flex-1 px-3 py-1.5 text-xs border border-slate-300 rounded-lg focus:outline-none focus:border-slate-500"
+                />
+                <button type="submit" className={`${theme.headerBg} text-white text-xs px-3 py-1.5 rounded-lg font-semibold`}>
+                  Add
+                </button>
+              </div>
+              <label className="flex items-center gap-2 text-[11px] text-slate-600 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={isStaffOnlyGroup}
+                  onChange={(e) => setIsStaffOnlyGroup(e.target.checked)}
+                  className="rounded border-slate-300"
+                />
+                <Lock size={12} className="text-indigo-700" />
+                <span>Staff-Only Channel (Faculty & Admin discussion)</span>
+              </label>
+            </form>
+          )}
+
+          {/* Groups List */}
+          <div className="px-3 space-y-1">
+            {groups.map((grp) => {
+              const unread = unreadCounts[grp.id] || 0;
+              const isSelected = !viewAdmin && activeGroup?.id === grp.id;
+
+              return (
+                <button
+                  key={grp.id}
+                  onClick={() => selectGroup(grp)}
+                  className={`w-full text-left px-3 py-2.5 rounded-xl flex items-center justify-between transition ${
+                    isSelected ? theme.activeItem : 'text-slate-700 hover:bg-slate-100'
+                  }`}
+                >
+                  <div className="flex items-center gap-3 min-w-0">
+                    {grp.is_staff_only ? (
+                      <Lock size={16} className={isSelected ? 'text-amber-300 shrink-0' : 'text-indigo-700 shrink-0'} />
+                    ) : (
+                      <MessageCircle size={17} className={isSelected ? 'text-amber-300 shrink-0' : `${theme.iconColor} shrink-0`} />
+                    )}
+                    <div className="truncate">
+                      <p className="text-sm font-semibold truncate">{grp.name}</p>
+                      <p className={`text-[11px] truncate ${isSelected ? 'text-white/80' : 'text-slate-400'}`}>
+                        {grp.is_staff_only ? 'Staff-Only Chat' : grp.department || 'University Broadcast'}
+                      </p>
+                    </div>
+                  </div>
+
+                  {unread > 0 && !isSelected && (
+                    <span className="bg-amber-500 text-slate-950 text-[11px] font-extrabold px-2 py-0.5 rounded-full shrink-0">
+                      {unread}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Direct Staff-to-Staff Chat Directory (ONLY visible to Staff & Admin) */}
+          {isStaffOrAdmin && colleagues.length > 0 && (
+            <div className="mt-5 pt-4 border-t border-slate-100">
+              <div className="px-4 pb-2">
+                <span className="text-xs font-bold uppercase tracking-wider text-indigo-800 flex items-center gap-1.5">
+                  <UserCheck size={14} /> Direct Staff Chat
+                </span>
+                <p className="text-[10px] text-slate-400">Private 1-on-1 faculty & admin messaging</p>
+              </div>
+              <div className="px-3 pb-4 space-y-1">
+                {colleagues.map((col) => (
+                  <button
+                    key={col.id}
+                    onClick={() => handleStartDirectStaffChat(col)}
+                    className="w-full text-left px-3 py-2 rounded-xl hover:bg-indigo-50 flex items-center justify-between transition group"
+                  >
+                    <div className="min-w-0">
+                      <p className="text-xs font-bold text-slate-800 group-hover:text-indigo-900 truncate">
+                        {col.full_name}
+                      </p>
+                      <p className="text-[10px] text-slate-500 truncate">
+                        {col.designation || col.role} {col.department ? `• ${col.department}` : ''}
+                      </p>
+                    </div>
+                    <span className="text-[10px] bg-indigo-100 text-indigo-800 px-2 py-0.5 rounded-full font-semibold shrink-0">
+                      Chat
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </aside>
 
@@ -470,7 +557,7 @@ export default function App() {
         ) : (
           <div className="flex-1 flex items-center justify-center text-slate-400 text-sm p-6 text-center">
             {isStaffOrAdmin
-              ? 'Create your first department or staff group from the sidebar.'
+              ? 'Create a group or click any colleague under Direct Staff Chat to start messaging.'
               : 'You have not been added to any department groups yet.'}
           </div>
         )}

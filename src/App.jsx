@@ -208,7 +208,18 @@ const [profileError, setProfileError] = useState('');
         {viewAdmin && profile.role === 'admin' ? (
           <AdminDashboard onSelectGroup={(g) => { setActiveGroup(g); setViewAdmin(false); }} />
         ) : activeGroup ? (
-          <ChatRoom group={activeGroup} currentUser={profile} />
+          <ChatRoom
+            group={activeGroup}
+            currentUser={profile}
+            onGroupUpdated={(updated) => {
+              setActiveGroup(updated);
+              loadGroups();
+            }}
+            onGroupDeleted={(deletedId) => {
+              setActiveGroup(null);
+              setGroups((prev) => prev.filter((g) => g.id !== deletedId));
+            }}
+          />
         ) : (
           <div className="flex-1 flex items-center justify-center text-slate-400 text-sm p-6 text-center">
             {isStaffOrAdmin ? 'Create your first department or staff group from the sidebar.' : 'You have not been added to any department groups yet.'}

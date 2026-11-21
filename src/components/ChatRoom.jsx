@@ -1,8 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../supabaseClient';
-import { Send, Paperclip, Download, Users, ShieldCheck, FileText, UserPlus, Trash2, Search } from 'lucide-react';
+import {
+  Send, Paperclip, Download, Users, ShieldCheck, FileText,
+  UserPlus, Trash2, Search, Pencil, Check, X
+} from 'lucide-react';
 
-export default function ChatRoom({ group, currentUser }) {
+export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDeleted }) {
   const [messages, setMessages] = useState([]);
   const [members, setMembers] = useState([]);
   const [allUsers, setAllUsers] = useState([]);
@@ -12,12 +15,24 @@ export default function ChatRoom({ group, currentUser }) {
   const [showMembers, setShowMembers] = useState(false);
   const [uploading, setUploading] = useState(false);
 
-  const canPost = currentUser.role === 'admin' || currentUser.role === 'staff';
+  // Rename group state
+  const [isRenaming, setIsRenaming] = useState(false);
+  const [editedName, setEditedName] = useState(group.name);
+
+  const canManage = currentUser.role === 'admin' || currentUser.role === 'staff';
+  const isAdmin = currentUser.role === 'admin';
 
   useEffect(() => {
+    setEditedName(group.name);
+    setIsRenaming(false);
+    setShowMembers(false);
     fetchMessages();
     fetchMembers();
-    if (canPost) fetchAllProfiles();
+    if (canManage) {
+      fetchAllProfiles();
+    } else {
+      setAllUsers([]); // Ensure students/parents never hold user lists in memory
+    }
 
     const channel = supabase
       .channel(`group-${group.id}`)
@@ -45,7 +60,10 @@ export default function ChatRoom({ group, currentUser }) {
       .from('group_members')
       .select('user_id, profiles(id, full_name, email, designation, department, role)')
       .eq('group_id', group.id);
-    if (data) setMembers(data.map((m) => m.profiles).filter(Boolean));
+    if (data) {
+      const cleaned = data.map((m) => m.profiles).filter(Boolean);
+      setMembers(cleaned);
+    }
   }
 
   async function fetchAllProfiles() {
@@ -56,7 +74,35 @@ export default function ChatRoom({ group, currentUser }) {
     if (data) setAllUsers(data);
   }
 
+  async function handleRenameGroup() {
+    const trimmed = editedName.trim();
+    if (!trimmed || trimmed === group.name) {
+      setIsRenaming(false);
+      return;
+    }
+    const { data, error } = await supabase
+      .from('groups')
+      .update({ name: trimmed })
+      .eq('id', group.id)
+      .select()
+      .single();
+
+    if (!error && data) {
+      setIsRenaming(false);
+      if (onGroupUpdated) onGroupUpdated(data);
+    }
+  }
+
+  async function handleDeleteGroup() {
+    if (!window.confirm(`Permanently delete "${group.name}" and all its messages?`)) return;
+    const { error } = await supabase.from('groups').delete().eq('id', group.id);
+    if (!error && onGroupDeleted) {
+      onGroupDeleted(group.id);
+    }
+  }
+
   async function handleAddMember(userId) {
+    if (!canManage) return;
     const { error } = await supabase
       .from('group_members')
       .insert([{ group_id: group.id, user_id: userId }]);
@@ -64,6 +110,7 @@ export default function ChatRoom({ group, currentUser }) {
   }
 
   async function handleRemoveMember(userId) {
+    if (!canManage) return;
     if (userId === currentUser.id) return;
     await supabase
       .from('group_members')
@@ -73,24 +120,25 @@ export default function ChatRoom({ group, currentUser }) {
     fetchMembers();
   }
 
-  // PRIVACY RULE: Students/Parents only see Staff/Admins, never other Students/Parents
-  const visibleMembers = canPost
+  // STRICT PRIVACY: Students/Parents ONLY see Staff & Admin, never other Students/Parents
+  const visibleMembers = canManage
     ? members
     : members.filter((m) => m.role === 'staff' || m.role === 'admin');
 
-  // Filter users not yet in this group
   const memberIds = new Set(members.map((m) => m.id));
-  const availableUsers = allUsers.filter(
-    (u) =>
-      !memberIds.has(u.id) &&
-      (u.full_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        u.email.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        (u.department || '').toLowerCase().includes(searchTerm.toLowerCase()))
-  );
+  const availableUsers = canManage
+    ? allUsers.filter(
+        (u) =>
+          !memberIds.has(u.id) &&
+          (u.full_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+            u.email.toLowerCase().includes(searchTerm.toLowerCase()) ||
+            (u.department || '').toLowerCase().includes(searchTerm.toLowerCase()))
+      )
+    : [];
 
   async function handleSend(e) {
     e.preventDefault();
-    if (!text.trim() && !file) return;
+    if (!canManage || (!text.trim() && !file)) return;
     setUploading(true);
 
     let mediaUrl = null;
@@ -131,26 +179,69 @@ export default function ChatRoom({ group, currentUser }) {
   return (
     <div className="flex flex-col h-full bg-slate-50">
       {/* Header */}
-      <div className="bg-brand-maroon text-white px-4 py-3 flex items-center justify-between shadow-md">
-        <div>
-          <h2 className="font-bold text-lg leading-tight">{group.name}</h2>
+      <div className="bg-brand-maroon text-white px-4 py-3 flex items-center justify-between shadow-md gap-2">
+        <div className="min-w-0 flex-1">
+          {isRenaming && canManage ? (
+            <div className="flex items-center gap-1.5">
+              <input
+                type="text"
+                value={editedName}
+                onChange={(e) => setEditedName(e.target.value)}
+                autoFocus
+                className="bg-white text-slate-900 text-sm font-bold px-2.5 py-1 rounded-lg focus:outline-none w-full max-w-xs"
+              />
+              <button onClick={handleRenameGroup} className="p-1.5 bg-emerald-600 rounded-lg hover:bg-emerald-700" title="Save name">
+                <Check size={14} />
+              </button>
+              <button onClick={() => { setIsRenaming(false); setEditedName(group.name); }} className="p-1.5 bg-white/20 rounded-lg hover:bg-white/30" title="Cancel">
+                <X size={14} />
+              </button>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2">
+              <h2 className="font-bold text-lg leading-tight truncate">{group.name}</h2>
+              {canManage && (
+                <button
+                  onClick={() => setIsRenaming(true)}
+                  title="Rename group"
+                  className="p-1 text-amber-200 hover:text-white hover:bg-white/15 rounded transition"
+                >
+                  <Pencil size={14} />
+                </button>
+              )}
+            </div>
+          )}
           <p className="text-xs text-amber-200">
-            {canPost ? `${members.length} Total Members` : 'Official Department Broadcast'}
+            {canManage ? `${members.length} Total Members` : 'Official Department Broadcast'}
           </p>
         </div>
-        <button
-          onClick={() => setShowMembers(!showMembers)}
-          className="flex items-center gap-1.5 bg-white/15 hover:bg-white/25 px-3 py-1.5 rounded-full text-xs font-medium transition"
-        >
-          <Users size={15} />
-          <span>{canPost ? 'Manage Members' : 'Faculty'}</span>
-        </button>
+
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            onClick={() => setShowMembers(!showMembers)}
+            className="flex items-center gap-1.5 bg-white/15 hover:bg-white/25 px-3 py-1.5 rounded-full text-xs font-medium transition"
+          >
+            <Users size={15} />
+            <span>{canManage ? 'Manage Members' : 'Faculty'}</span>
+          </button>
+
+          {(isAdmin || group.created_by === currentUser.id) && (
+            <button
+              onClick={handleDeleteGroup}
+              title="Delete group"
+              className="p-2 bg-red-950/50 hover:bg-red-700 text-red-200 hover:text-white rounded-full transition"
+            >
+              <Trash2 size={15} />
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Collapsible Member Drawer */}
       {showMembers && (
         <div className="bg-white border-b border-slate-200 p-4 shadow-inner max-h-80 overflow-y-auto space-y-4">
-          {canPost && (
+          {/* Add Member Search: ONLY rendered for Staff & Admin */}
+          {canManage && (
             <div className="bg-brand-light p-3 rounded-xl border border-red-100">
               <p className="text-xs font-bold text-brand-maroon mb-2 flex items-center gap-1.5">
                 <UserPlus size={14} /> Add Students, Parents, or Staff to {group.name}
@@ -161,7 +252,7 @@ export default function ChatRoom({ group, currentUser }) {
                   type="text"
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
-                  placeholder="Search by name, email, or department..."
+                  placeholder="Search by name, username, or department..."
                   className="w-full pl-8 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs focus:outline-none focus:border-brand-maroon"
                 />
               </div>
@@ -190,37 +281,42 @@ export default function ChatRoom({ group, currentUser }) {
             </div>
           )}
 
+          {/* Member List: Students/Parents only see Staff/Admin here */}
           <div>
             <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-2">
-              {canPost ? `Current Group Members (${members.length})` : 'Group Administrators & Faculty'}
+              {canManage ? `All Group Members (${members.length})` : 'Group Faculty & Administrators'}
             </h3>
             <div className="space-y-1.5">
-              {visibleMembers.map((member) => (
-                <div key={member.id} className="flex items-center justify-between text-sm bg-slate-50 p-2 rounded-lg">
-                  <div>
-                    <span className="font-medium text-slate-800">{member.full_name}</span>
-                    <span className="ml-2 text-xs text-slate-500">
-                      {member.designation || member.role} {member.department ? `• ${member.department}` : ''}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {(member.role === 'staff' || member.role === 'admin') && (
-                      <span className="text-[10px] bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full font-semibold flex items-center gap-1">
-                        <ShieldCheck size={12} /> Staff
+              {visibleMembers.length === 0 ? (
+                <p className="text-xs text-slate-400">No faculty listed.</p>
+              ) : (
+                visibleMembers.map((member) => (
+                  <div key={member.id} className="flex items-center justify-between text-sm bg-slate-50 p-2 rounded-lg">
+                    <div>
+                      <span className="font-medium text-slate-800">{member.full_name}</span>
+                      <span className="ml-2 text-xs text-slate-500">
+                        {member.designation || member.role} {member.department ? `• ${member.department}` : ''}
                       </span>
-                    )}
-                    {canPost && member.id !== currentUser.id && (
-                      <button
-                        onClick={() => handleRemoveMember(member.id)}
-                        title="Remove from group"
-                        className="text-slate-400 hover:text-red-600 p-1"
-                      >
-                        <Trash2 size={14} />
-                      </button>
-                    )}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {(member.role === 'staff' || member.role === 'admin') && (
+                        <span className="text-[10px] bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full font-semibold flex items-center gap-1">
+                          <ShieldCheck size={12} /> Staff
+                        </span>
+                      )}
+                      {canManage && member.id !== currentUser.id && (
+                        <button
+                          onClick={() => handleRemoveMember(member.id)}
+                          title="Remove from group"
+                          className="text-slate-400 hover:text-red-600 p-1"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      )}
+                    </div>
                   </div>
-                </div>
-              ))}
+                ))
+              )}
             </div>
           </div>
         </div>
@@ -242,7 +338,6 @@ export default function ChatRoom({ group, currentUser }) {
 
             {msg.content && <p className="text-slate-800 text-sm whitespace-pre-wrap mb-2">{msg.content}</p>}
 
-            {/* Media Attachments with Download */}
             {msg.media_url && (
               <div className="mt-2 bg-slate-50 p-3 rounded-xl border border-slate-200">
                 {msg.media_type === 'image' && (
@@ -276,7 +371,7 @@ export default function ChatRoom({ group, currentUser }) {
       </div>
 
       {/* Input Area: ONLY visible to Staff & Admin */}
-      {canPost ? (
+      {canManage ? (
         <form onSubmit={handleSend} className="p-3 bg-white border-t border-slate-200 flex items-center gap-2">
           <label className="cursor-pointer p-2 text-slate-500 hover:text-brand-maroon rounded-full hover:bg-slate-100">
             <Paperclip size={20} />

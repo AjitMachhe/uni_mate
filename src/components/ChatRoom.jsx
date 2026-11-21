@@ -1,9 +1,16 @@
 import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from '../supabaseClient';
 import {
   Send, Paperclip, Download, Users, ShieldCheck, FileText,
   UserPlus, Trash2, Search, Pencil, Check, X
 } from 'lucide-react';
+
+const bottomRef = useRef(null);
+
+useEffect(() => {
+  bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+}, [messages]);
 
 export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDeleted }) {
   const [messages, setMessages] = useState([]);

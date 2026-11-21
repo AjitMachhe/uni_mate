@@ -341,12 +341,12 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
         {messages.map((msg) => {
           const isMsgAdmin = msg.profiles?.role === 'admin';
           return (
-            <div
-              key={msg.id}
-              className={`bg-white rounded-2xl p-4 shadow-sm border-l-4 max-w-2xl ${
-                isMsgAdmin ? 'border-l-[#800000] border border-red-100' : 'border-l-indigo-700 border border-indigo-100'
-              }`}
-            >
+       <div
+           key={msg.id}
+           className={`bg-white rounded-r-lg rounded-l-none p-4 shadow-sm border-l-4 max-w-2xl ${
+             isMsgAdmin ? 'border-l-[#800000] border border-red-100' : 'border-l-indigo-700 border border-indigo-100'
+           }`}
+         >
               <div className="flex items-center justify-between mb-1.5">
                 <span className={`text-xs font-bold ${isMsgAdmin ? 'text-[#800000]' : 'text-indigo-800'}`}>
                   {msg.profiles?.full_name} •{' '}

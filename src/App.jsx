@@ -5,6 +5,41 @@ import ChatRoom from './components/ChatRoom';
 import AdminDashboard from './components/AdminDashboard';
 import { LogOut, Plus, Shield, MessageCircle, Menu, X, GraduationCap, Bell } from 'lucide-react';
 
+const ROLE_THEMES = {
+  admin: {
+    headerBg: 'bg-[#800000]',
+    activeItem: 'bg-[#800000] text-white shadow-sm',
+    iconColor: 'text-[#800000]',
+    userCardBg: 'bg-red-50 border-red-100',
+    userTitle: 'text-[#800000]',
+    badge: 'bg-amber-400 text-slate-950',
+  },
+  staff: {
+    headerBg: 'bg-indigo-900',
+    activeItem: 'bg-indigo-900 text-white shadow-sm',
+    iconColor: 'text-indigo-700',
+    userCardBg: 'bg-indigo-50 border-indigo-100',
+    userTitle: 'text-indigo-800',
+    badge: 'bg-sky-300 text-indigo-950',
+  },
+  student: {
+    headerBg: 'bg-emerald-800',
+    activeItem: 'bg-emerald-800 text-white shadow-sm',
+    iconColor: 'text-emerald-700',
+    userCardBg: 'bg-emerald-50 border-emerald-100',
+    userTitle: 'text-emerald-800',
+    badge: 'bg-emerald-200 text-emerald-950',
+  },
+  parent: {
+    headerBg: 'bg-teal-800',
+    activeItem: 'bg-teal-800 text-white shadow-sm',
+    iconColor: 'text-teal-700',
+    userCardBg: 'bg-teal-50 border-teal-100',
+    userTitle: 'text-teal-800',
+    badge: 'bg-teal-200 text-teal-950',
+  },
+};
+
 export default function App() {
   const [session, setSession] = useState(null);
   const [profile, setProfile] = useState(null);
@@ -16,7 +51,6 @@ export default function App() {
   const [newGroupName, setNewGroupName] = useState('');
   const [showNewGroup, setShowNewGroup] = useState(false);
 
-  // Track unread message counts per group ID & toast banner
   const [unreadCounts, setUnreadCounts] = useState({});
   const [toastAlert, setToastAlert] = useState(null);
   const activeGroupRef = useRef(null);
@@ -43,11 +77,9 @@ export default function App() {
     return () => subscription.unsubscribe();
   }, []);
 
-  // Global Realtime listener for new messages across all user groups
   useEffect(() => {
     if (!profile) return;
 
-    // Request browser notification permission once
     if ('Notification' in window && Notification.permission === 'default') {
       Notification.requestPermission();
     }
@@ -57,14 +89,12 @@ export default function App() {
       .on(
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'messages' },
-        async (payload) => {
+        (payload) => {
           const newMsg = payload.new;
-          if (newMsg.sender_id === profile.id) return; // Ignore own messages
+          if (newMsg.sender_id === profile.id) return;
 
-          // Play subtle notification chime
           playNotificationChime();
 
-          // If user isn't currently viewing this group, increment unread badge
           if (!activeGroupRef.current || activeGroupRef.current.id !== newMsg.group_id) {
             setUnreadCounts((prev) => ({
               ...prev,
@@ -72,11 +102,9 @@ export default function App() {
             }));
           }
 
-          // Show in-app toast banner
           setToastAlert(newMsg.content || `New attachment: ${newMsg.file_name || 'Media'}`);
           setTimeout(() => setToastAlert(null), 5000);
 
-          // Trigger system/browser notification if tab is in background
           if ('Notification' in window && Notification.permission === 'granted' && document.hidden) {
             new Notification('uni_mate • New Announcement', {
               body: newMsg.content || `New file shared: ${newMsg.file_name}`,
@@ -87,7 +115,7 @@ export default function App() {
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'group_members', filter: `user_id=eq.${profile.id}` },
-        () => loadGroups() // Auto-refresh sidebar if user is added/removed from a group
+        () => loadGroups()
       )
       .subscribe();
 
@@ -108,7 +136,7 @@ export default function App() {
       osc.start();
       osc.stop(ctx.currentTime + 0.25);
     } catch {
-      // Ignore if browser blocks audio before first user click
+      // Ignore if audio blocked before first click
     }
   }
 
@@ -163,7 +191,6 @@ export default function App() {
     setActiveGroup(grp);
     setViewAdmin(false);
     setMobileMenuOpen(false);
-    // Clear unread badge for opened group
     setUnreadCounts((prev) => {
       const updated = { ...prev };
       delete updated[grp.id];
@@ -192,6 +219,7 @@ export default function App() {
   }
 
   const isStaffOrAdmin = profile.role === 'admin' || profile.role === 'staff';
+  const theme = ROLE_THEMES[profile.role] || ROLE_THEMES.student;
   const totalUnread = Object.values(unreadCounts).reduce((a, b) => a + b, 0);
 
   return (
@@ -208,7 +236,7 @@ export default function App() {
       )}
 
       {/* Mobile Top Navbar */}
-      <div className="md:hidden bg-brand-maroon text-white px-4 py-3 flex items-center justify-between shadow">
+      <div className={`md:hidden ${theme.headerBg} text-white px-4 py-3 flex items-center justify-between shadow`}>
         <div className="flex items-center gap-2 font-bold">
           <GraduationCap size={22} className="text-amber-300" />
           <span>uni_mate</span>
@@ -225,21 +253,21 @@ export default function App() {
 
       {/* Sidebar */}
       <aside className={`${mobileMenuOpen ? 'fixed inset-0 z-40 flex' : 'hidden'} md:flex flex-col w-full md:w-80 bg-white border-r border-slate-200`}>
-        <div className="p-4 bg-brand-maroon text-white hidden md:flex items-center justify-between">
+        <div className={`p-4 ${theme.headerBg} text-white hidden md:flex items-center justify-between`}>
           <div className="flex items-center gap-2 font-extrabold text-lg">
             <GraduationCap size={24} className="text-amber-300" />
             <span>uni_mate</span>
           </div>
-          <span className="text-[10px] uppercase bg-white/20 px-2 py-0.5 rounded-full font-semibold">
+          <span className={`text-[10px] uppercase px-2.5 py-0.5 rounded-full font-extrabold ${theme.badge}`}>
             {profile.role}
           </span>
         </div>
 
         {/* User Card */}
-        <div className="p-4 bg-brand-light border-b border-red-100 flex items-center justify-between">
+        <div className={`p-4 border-b flex items-center justify-between ${theme.userCardBg}`}>
           <div>
             <p className="font-bold text-sm text-slate-800">{profile.full_name}</p>
-            <p className="text-xs text-brand-maroon font-medium">{profile.designation || profile.role}</p>
+            <p className={`text-xs font-semibold ${theme.userTitle}`}>{profile.designation || profile.role}</p>
           </div>
           <button
             onClick={() => supabase.auth.signOut()}
@@ -270,7 +298,7 @@ export default function App() {
           {isStaffOrAdmin && (
             <button
               onClick={() => setShowNewGroup(!showNewGroup)}
-              className="text-xs flex items-center gap-1 text-brand-maroon font-bold hover:underline"
+              className={`text-xs flex items-center gap-1 font-bold hover:underline ${theme.userTitle}`}
             >
               <Plus size={14} /> New Group
             </button>
@@ -284,9 +312,9 @@ export default function App() {
               placeholder="e.g. CSE TY Notices"
               value={newGroupName}
               onChange={(e) => setNewGroupName(e.target.value)}
-              className="flex-1 px-3 py-1.5 text-xs border border-slate-300 rounded-lg focus:outline-none focus:border-brand-maroon"
+              className="flex-1 px-3 py-1.5 text-xs border border-slate-300 rounded-lg focus:outline-none focus:border-slate-500"
             />
-            <button type="submit" className="bg-brand-maroon text-white text-xs px-3 py-1.5 rounded-lg font-semibold">
+            <button type="submit" className={`${theme.headerBg} text-white text-xs px-3 py-1.5 rounded-lg font-semibold`}>
               Add
             </button>
           </form>
@@ -304,15 +332,15 @@ export default function App() {
                 onClick={() => selectGroup(grp)}
                 className={`w-full text-left px-3 py-3 rounded-xl flex items-center justify-between transition ${
                   isSelected
-                    ? 'bg-brand-maroon text-white shadow-sm'
+                    ? theme.activeItem
                     : 'text-slate-700 hover:bg-slate-100'
                 }`}
               >
                 <div className="flex items-center gap-3 min-w-0">
-                  <MessageCircle size={18} className={isSelected ? 'text-amber-300 shrink-0' : 'text-brand-maroon shrink-0'} />
+                  <MessageCircle size={18} className={isSelected ? 'text-amber-300 shrink-0' : `${theme.iconColor} shrink-0`} />
                   <div className="truncate">
                     <p className="text-sm font-semibold truncate">{grp.name}</p>
-                    <p className={`text-[11px] truncate ${isSelected ? 'text-red-100' : 'text-slate-400'}`}>
+                    <p className={`text-[11px] truncate ${isSelected ? 'text-white/80' : 'text-slate-400'}`}>
                       {grp.department || 'University Broadcast'}
                     </p>
                   </div>

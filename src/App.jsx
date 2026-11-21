@@ -3,7 +3,7 @@ import { supabase } from './supabaseClient';
 import AuthScreen from './components/AuthScreen';
 import ChatRoom from './components/ChatRoom';
 import AdminDashboard from './components/AdminDashboard';
-import { LogOut, Plus, Shield, MessageCircle, Menu, X, GraduationCap, Bell } from 'lucide-react';
+import { LogOut, Plus, Shield, MessageCircle, Menu, X, GraduationCap, Bell, Lock, KeyRound } from 'lucide-react';
 
 const ROLE_THEMES = {
   admin: {
@@ -48,8 +48,16 @@ export default function App() {
   const [activeGroup, setActiveGroup] = useState(null);
   const [viewAdmin, setViewAdmin] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+
+  // New group state
   const [newGroupName, setNewGroupName] = useState('');
+  const [isStaffOnlyGroup, setIsStaffOnlyGroup] = useState(false);
   const [showNewGroup, setShowNewGroup] = useState(false);
+
+  // Change password modal state
+  const [showPwdModal, setShowPwdModal] = useState(false);
+  const [newPassword, setNewPassword] = useState('');
+  const [pwdStatus, setPwdStatus] = useState('');
 
   const [unreadCounts, setUnreadCounts] = useState({});
   const [toastAlert, setToastAlert] = useState(null);
@@ -136,7 +144,7 @@ export default function App() {
       osc.start();
       osc.stop(ctx.currentTime + 0.25);
     } catch {
-      // Ignore if audio blocked before first click
+      // Ignore if audio blocked
     }
   }
 
@@ -173,17 +181,44 @@ export default function App() {
     if (!newGroupName.trim()) return;
     const { data: grp, error } = await supabase
       .from('groups')
-      .insert([{ name: newGroupName, department: profile.department, created_by: profile.id }])
+      .insert([
+        {
+          name: newGroupName,
+          department: profile.department,
+          created_by: profile.id,
+          is_staff_only: isStaffOnlyGroup,
+        },
+      ])
       .select()
       .single();
 
     if (!error && grp) {
       await supabase.from('group_members').insert([{ group_id: grp.id, user_id: profile.id }]);
       setNewGroupName('');
+      setIsStaffOnlyGroup(false);
       setShowNewGroup(false);
       loadGroups();
       setActiveGroup(grp);
       setViewAdmin(false);
+    }
+  }
+
+  async function handlePasswordUpdate(e) {
+    e.preventDefault();
+    if (newPassword.length < 6) {
+      setPwdStatus('Password must be at least 6 characters.');
+      return;
+    }
+    const { error } = await supabase.auth.updateUser({ password: newPassword });
+    if (error) {
+      setPwdStatus(`Error: ${error.message}`);
+    } else {
+      setPwdStatus('Password updated successfully!');
+      setNewPassword('');
+      setTimeout(() => {
+        setShowPwdModal(false);
+        setPwdStatus('');
+      }, 1500);
     }
   }
 
@@ -224,6 +259,41 @@ export default function App() {
 
   return (
     <div className="h-screen flex flex-col md:flex-row bg-slate-100 overflow-hidden relative">
+      {/* Change Password Modal */}
+      {showPwdModal && (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-sm w-full p-5 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="font-bold text-slate-800 text-sm flex items-center gap-2">
+                <KeyRound size={16} className={theme.iconColor} /> Change Your Password
+              </h3>
+              <button onClick={() => { setShowPwdModal(false); setPwdStatus(''); }} className="text-slate-400 hover:text-slate-700">
+                <X size={18} />
+              </button>
+            </div>
+            {pwdStatus && (
+              <p className="text-xs font-semibold text-amber-900 bg-amber-50 border border-amber-200 p-2.5 rounded-xl">
+                {pwdStatus}
+              </p>
+            )}
+            <form onSubmit={handlePasswordUpdate} className="space-y-3">
+              <input
+                type="password"
+                required
+                minLength={6}
+                placeholder="New password (min 6 characters)"
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                className="w-full px-3 py-2 border border-slate-300 rounded-xl text-xs focus:outline-none focus:border-slate-600"
+              />
+              <button type="submit" className={`w-full ${theme.headerBg} text-white py-2 rounded-xl text-xs font-bold`}>
+                Update Password
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* Live In-App Toast Notification */}
       {toastAlert && (
         <div className="fixed bottom-16 right-4 z-50 bg-slate-900 text-white px-4 py-3 rounded-2xl shadow-xl border border-amber-400/40 flex items-center gap-3 max-w-xs animate-bounce">
@@ -265,17 +335,26 @@ export default function App() {
 
         {/* User Card */}
         <div className={`p-4 border-b flex items-center justify-between ${theme.userCardBg}`}>
-          <div>
-            <p className="font-bold text-sm text-slate-800">{profile.full_name}</p>
-            <p className={`text-xs font-semibold ${theme.userTitle}`}>{profile.designation || profile.role}</p>
+          <div className="min-w-0">
+            <p className="font-bold text-sm text-slate-800 truncate">{profile.full_name}</p>
+            <p className={`text-xs font-semibold truncate ${theme.userTitle}`}>{profile.designation || profile.role}</p>
           </div>
-          <button
-            onClick={() => supabase.auth.signOut()}
-            title="Sign Out"
-            className="p-2 text-slate-500 hover:text-red-600 rounded-lg hover:bg-white transition"
-          >
-            <LogOut size={18} />
-          </button>
+          <div className="flex items-center gap-1 shrink-0">
+            <button
+              onClick={() => setShowPwdModal(true)}
+              title="Change Password"
+              className="p-2 text-slate-500 hover:text-slate-900 rounded-lg hover:bg-white transition"
+            >
+              <KeyRound size={17} />
+            </button>
+            <button
+              onClick={() => supabase.auth.signOut()}
+              title="Sign Out"
+              className="p-2 text-slate-500 hover:text-red-600 rounded-lg hover:bg-white transition"
+            >
+              <LogOut size={17} />
+            </button>
+          </div>
         </div>
 
         {/* Admin Dashboard Button */}
@@ -306,17 +385,29 @@ export default function App() {
         </div>
 
         {showNewGroup && (
-          <form onSubmit={handleCreateGroup} className="px-4 pb-3 flex gap-1.5">
-            <input
-              type="text"
-              placeholder="e.g. CSE TY Notices"
-              value={newGroupName}
-              onChange={(e) => setNewGroupName(e.target.value)}
-              className="flex-1 px-3 py-1.5 text-xs border border-slate-300 rounded-lg focus:outline-none focus:border-slate-500"
-            />
-            <button type="submit" className={`${theme.headerBg} text-white text-xs px-3 py-1.5 rounded-lg font-semibold`}>
-              Add
-            </button>
+          <form onSubmit={handleCreateGroup} className="px-4 pb-3 space-y-2">
+            <div className="flex gap-1.5">
+              <input
+                type="text"
+                placeholder="e.g. CSE TY Notices"
+                value={newGroupName}
+                onChange={(e) => setNewGroupName(e.target.value)}
+                className="flex-1 px-3 py-1.5 text-xs border border-slate-300 rounded-lg focus:outline-none focus:border-slate-500"
+              />
+              <button type="submit" className={`${theme.headerBg} text-white text-xs px-3 py-1.5 rounded-lg font-semibold`}>
+                Add
+              </button>
+            </div>
+            <label className="flex items-center gap-2 text-[11px] text-slate-600 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={isStaffOnlyGroup}
+                onChange={(e) => setIsStaffOnlyGroup(e.target.checked)}
+                className="rounded border-slate-300"
+              />
+              <Lock size={12} className="text-indigo-700" />
+              <span>Staff-Only Channel (Faculty & Admin discussion)</span>
+            </label>
           </form>
         )}
 
@@ -331,17 +422,19 @@ export default function App() {
                 key={grp.id}
                 onClick={() => selectGroup(grp)}
                 className={`w-full text-left px-3 py-3 rounded-xl flex items-center justify-between transition ${
-                  isSelected
-                    ? theme.activeItem
-                    : 'text-slate-700 hover:bg-slate-100'
+                  isSelected ? theme.activeItem : 'text-slate-700 hover:bg-slate-100'
                 }`}
               >
                 <div className="flex items-center gap-3 min-w-0">
-                  <MessageCircle size={18} className={isSelected ? 'text-amber-300 shrink-0' : `${theme.iconColor} shrink-0`} />
+                  {grp.is_staff_only ? (
+                    <Lock size={17} className={isSelected ? 'text-amber-300 shrink-0' : 'text-indigo-700 shrink-0'} />
+                  ) : (
+                    <MessageCircle size={18} className={isSelected ? 'text-amber-300 shrink-0' : `${theme.iconColor} shrink-0`} />
+                  )}
                   <div className="truncate">
                     <p className="text-sm font-semibold truncate">{grp.name}</p>
                     <p className={`text-[11px] truncate ${isSelected ? 'text-white/80' : 'text-slate-400'}`}>
-                      {grp.department || 'University Broadcast'}
+                      {grp.is_staff_only ? 'Staff-Only Channel' : grp.department || 'University Broadcast'}
                     </p>
                   </div>
                 </div>
@@ -359,10 +452,8 @@ export default function App() {
 
       {/* Main Content Area */}
       <main className="flex-1 flex flex-col h-full overflow-hidden">
-       {viewAdmin && profile.role === 'admin' ? (
+        {viewAdmin && profile.role === 'admin' ? (
           <AdminDashboard onGroupsChanged={loadGroups} />
-        ) : activeGroup ? (
-          <AdminDashboard />
         ) : activeGroup ? (
           <ChatRoom
             group={activeGroup}

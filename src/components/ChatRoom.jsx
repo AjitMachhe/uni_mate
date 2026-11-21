@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from '../supabaseClient';
 import {
   Send, Paperclip, Download, Users, ShieldCheck, FileText,
-  UserPlus, Trash2, Search, Pencil, Check, X
+  UserPlus, Trash2, Search, Pencil, Check, X, Pin, Lock
 } from 'lucide-react';
 
 const ROOM_THEMES = {
@@ -24,7 +24,6 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
   const [showMembers, setShowMembers] = useState(false);
   const [uploading, setUploading] = useState(false);
 
-  // Rename group state
   const [isRenaming, setIsRenaming] = useState(false);
   const [editedName, setEditedName] = useState(group.name);
 
@@ -63,7 +62,7 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
       .channel(`group-${group.id}`)
       .on(
         'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'messages', filter: `group_id=eq.${group.id}` },
+        { event: '*', schema: 'public', table: 'messages', filter: `group_id=eq.${group.id}` },
         () => fetchMessages()
       )
       .subscribe();
@@ -97,6 +96,15 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
       .select('id, full_name, email, designation, department, role')
       .order('full_name', { ascending: true });
     if (data) setAllUsers(data);
+  }
+
+  async function handleTogglePin(msg) {
+    if (!canManage) return;
+    await supabase
+      .from('messages')
+      .update({ is_pinned: !msg.is_pinned })
+      .eq('id', msg.id);
+    fetchMessages();
   }
 
   async function handleRenameGroup() {
@@ -145,21 +153,25 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
     fetchMembers();
   }
 
-  // STRICT PRIVACY: Students/Parents ONLY see Staff & Admin, never other Students/Parents
   const visibleMembers = canManage
     ? members
     : members.filter((m) => m.role === 'staff' || m.role === 'admin');
 
   const memberIds = new Set(members.map((m) => m.id));
   const availableUsers = canManage
-    ? allUsers.filter(
-        (u) =>
-          !memberIds.has(u.id) &&
-          (u.full_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-            u.email.toLowerCase().includes(searchTerm.toLowerCase()) ||
-            (u.department || '').toLowerCase().includes(searchTerm.toLowerCase()))
-      )
+    ? allUsers.filter((u) => {
+        if (memberIds.has(u.id)) return false;
+        // If Staff-Only channel, only allow adding Staff or Admin
+        if (group.is_staff_only && u.role !== 'staff' && u.role !== 'admin') return false;
+        return (
+          u.full_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+          u.email.toLowerCase().includes(searchTerm.toLowerCase()) ||
+          (u.department || '').toLowerCase().includes(searchTerm.toLowerCase())
+        );
+      })
     : [];
+
+  const pinnedMessages = messages.filter((m) => m.is_pinned);
 
   async function handleSend(e) {
     e.preventDefault();
@@ -225,6 +237,7 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
             </div>
           ) : (
             <div className="flex items-center gap-2">
+              {group.is_staff_only && <Lock size={15} className="text-amber-300 shrink-0" />}
               <h2 className="font-bold text-lg leading-tight truncate">{group.name}</h2>
               {canManage && (
                 <button
@@ -238,7 +251,11 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
             </div>
           )}
           <p className="text-xs text-white/80">
-            {canManage ? `${members.length} Total Members` : 'Official Department Broadcast'}
+            {group.is_staff_only
+              ? `Private Staff Discussion • ${members.length} Faculty`
+              : canManage
+              ? `${members.length} Total Members`
+              : 'Official Department Broadcast'}
           </p>
         </div>
 
@@ -263,13 +280,34 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
         </div>
       </div>
 
+      {/* Pinned Notice Banner */}
+      {pinnedMessages.length > 0 && (
+        <div className="bg-amber-50 border-b border-amber-200 px-4 py-2 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2 text-xs text-amber-950 truncate">
+            <Pin size={14} className="text-amber-600 shrink-0 rotate-45" />
+            <span className="font-bold shrink-0">Pinned Notice:</span>
+            <span className="truncate">
+              {pinnedMessages[pinnedMessages.length - 1].content || pinnedMessages[pinnedMessages.length - 1].file_name}
+            </span>
+          </div>
+          {pinnedMessages.length > 1 && (
+            <span className="text-[10px] bg-amber-200 text-amber-900 px-2 py-0.5 rounded-full font-bold shrink-0">
+              +{pinnedMessages.length - 1} more
+            </span>
+          )}
+        </div>
+      )}
+
       {/* Collapsible Member Drawer */}
       {showMembers && (
         <div className="bg-white border-b border-slate-200 p-4 shadow-inner max-h-80 overflow-y-auto space-y-4">
           {canManage && (
             <div className="bg-slate-50 p-3 rounded-xl border border-slate-200">
               <p className="text-xs font-bold text-slate-800 mb-2 flex items-center gap-1.5">
-                <UserPlus size={14} /> Add Students, Parents, or Staff to {group.name}
+                <UserPlus size={14} />{' '}
+                {group.is_staff_only
+                  ? `Add Faculty/Staff to ${group.name}`
+                  : `Add Students, Parents, or Staff to ${group.name}`}
               </p>
               <div className="relative mb-2">
                 <Search size={14} className="absolute left-3 top-2.5 text-slate-400" />
@@ -354,17 +392,39 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
             <div
               key={msg.id}
               className={`bg-white rounded-r-lg rounded-l-none p-4 shadow-sm border-l-4 max-w-2xl ${
-                isMsgAdmin ? 'border-l-[#800000] border border-red-100' : 'border-l-indigo-700 border border-indigo-100'
+                msg.is_pinned
+                  ? 'border-l-amber-500 border border-amber-200 bg-amber-50/30'
+                  : isMsgAdmin
+                  ? 'border-l-[#800000] border border-red-100'
+                  : 'border-l-indigo-700 border border-indigo-100'
               }`}
             >
-              <div className="flex items-center justify-between mb-1.5">
+              <div className="flex items-center justify-between mb-1.5 gap-2">
                 <span className={`text-xs font-bold ${isMsgAdmin ? 'text-[#800000]' : 'text-indigo-800'}`}>
                   {msg.profiles?.full_name} •{' '}
                   <span className="text-slate-500 font-normal">{msg.profiles?.designation}</span>
                 </span>
-                <span className="text-[11px] text-slate-400">
-                  {new Date(msg.created_at).toLocaleDateString()}
-                </span>
+                <div className="flex items-center gap-2 shrink-0">
+                  {msg.is_pinned && (
+                    <span className="text-[10px] bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full font-bold flex items-center gap-1">
+                      <Pin size={10} /> Pinned
+                    </span>
+                  )}
+                  <span className="text-[11px] text-slate-400">
+                    {new Date(msg.created_at).toLocaleDateString()}
+                  </span>
+                  {canManage && (
+                    <button
+                      onClick={() => handleTogglePin(msg)}
+                      title={msg.is_pinned ? 'Unpin message' : 'Pin notice to top'}
+                      className={`p-1 rounded transition ${
+                        msg.is_pinned ? 'text-amber-600 bg-amber-100' : 'text-slate-400 hover:text-amber-600'
+                      }`}
+                    >
+                      <Pin size={13} />
+                    </button>
+                  )}
+                </div>
               </div>
 
               {msg.content && <p className="text-slate-800 text-sm whitespace-pre-wrap mb-2">{msg.content}</p>}

@@ -2,7 +2,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from '../supabaseClient';
 import {
   Send, Paperclip, Download, Users, ShieldCheck, FileText,
-  UserPlus, Trash2, Search, Pencil, Check, X, Pin, Lock, Eye, UsersRound
+  UserPlus, Trash2, Search, Pencil, Check, X, Pin, Lock, Eye,
+  UsersRound, Reply
 } from 'lucide-react';
 
 const ROOM_THEMES = {
@@ -35,6 +36,11 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
   const [roleFilter, setRoleFilter] = useState('all');
   const [bulkAdding, setBulkAdding] = useState(false);
 
+  // Message Edit & Reply/Quote state
+  const [editingMsgId, setEditingMsgId] = useState(null);
+  const [editedMsgText, setEditedMsgText] = useState('');
+  const [replyingTo, setReplyingTo] = useState(null);
+
   const [chatSearchQuery, setChatSearchQuery] = useState('');
   const [showChatSearch, setShowChatSearch] = useState(false);
   const [text, setText] = useState('');
@@ -47,6 +53,7 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
 
   const messagesContainerRef = useRef(null);
   const bottomRef = useRef(null);
+  const inputRef = useRef(null);
 
   const canManage = currentUser.role === 'admin' || currentUser.role === 'staff';
   const isAdmin = currentUser.role === 'admin';
@@ -62,7 +69,7 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
   };
 
   useEffect(() => {
-    if (!chatSearchQuery) scrollToBottom();
+    if (!chatSearchQuery && !editingMsgId) scrollToBottom();
   }, [messages.length]);
 
   useEffect(() => {
@@ -92,6 +99,8 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
     setSearchTerm('');
     setDeptFilter('all');
     setRoleFilter('all');
+    setEditingMsgId(null);
+    setReplyingTo(null);
     fetchMessages();
     fetchMembers();
     if (canManage && !isDirectChat) {
@@ -202,6 +211,26 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
     fetchMessages();
   }
 
+  async function handleSaveEditedMessage(msgId) {
+    const trimmed = editedMsgText.trim();
+    if (!trimmed) return;
+
+    const { error } = await supabase
+      .from('messages')
+      .update({
+        content: trimmed,
+        is_edited: true,
+        edited_at: new Date().toISOString(),
+      })
+      .eq('id', msgId);
+
+    if (!error) {
+      setEditingMsgId(null);
+      setEditedMsgText('');
+      fetchMessages();
+    }
+  }
+
   async function handleDeleteMessage(msg) {
     if (!canManage) return;
     const promptText = isAdmin
@@ -260,7 +289,6 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
     if (!error) fetchMembers();
   }
 
-  // Bulk add all users currently matching the Department / Role / Search filter
   async function handleBulkAddMatching() {
     if (!canManage || isDirectChat || availableUsers.length === 0) return;
     if (!window.confirm(`Add all ${availableUsers.length} matching users to "${group.name}"?`)) return;
@@ -298,7 +326,6 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
     ? members
     : members.filter((m) => m.role === 'staff' || m.role === 'admin');
 
-  // Unique list of departments for the bulk filter dropdown
   const uniqueDepartments = Array.from(
     new Set(allUsers.map((u) => (u.department || '').trim()).filter(Boolean))
   ).sort();
@@ -366,10 +393,16 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
       media_url: mediaUrl,
       media_type: mediaType,
       file_name: fileName,
+      reply_to_id: replyingTo ? replyingTo.id : null,
+      reply_to_sender: replyingTo ? replyingTo.profiles?.full_name : null,
+      reply_to_snippet: replyingTo
+        ? (replyingTo.content || `[Attachment: ${replyingTo.file_name || 'Media'}]`).slice(0, 120)
+        : null,
     });
 
     setText('');
     setFile(null);
+    setReplyingTo(null);
     setUploading(false);
     await fetchMessages();
     scrollToBottom();
@@ -535,7 +568,6 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
                 )}
               </div>
 
-              {/* Department, Role & Text Search Filters */}
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                 <select
                   value={deptFilter}
@@ -575,7 +607,6 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
                 </div>
               </div>
 
-              {/* Matching Unadded Users List */}
               <div className="max-h-32 overflow-y-auto space-y-1">
                 {availableUsers.length === 0 ? (
                   <p className="text-[11px] text-slate-500 px-1">No matching users left to add.</p>
@@ -601,7 +632,6 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
             </div>
           )}
 
-          {/* Current Members List */}
           <div>
             <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-2">
               {canManage ? `All Group Members (${members.length})` : 'Group Faculty & Administrators'}
@@ -652,6 +682,8 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
           const isMsgAdmin = msg.profiles?.role === 'admin';
           const readers = readsByMessage[msg.id] || [];
           const isReadersExpanded = expandedReadsMsgId === msg.id;
+          const canEditThisMsg = canManage && (isAdmin || msg.sender_id === currentUser.id);
+          const isEditingThis = editingMsgId === msg.id;
 
           const fillHex = msg.is_pinned
             ? '#fffbeb'
@@ -673,6 +705,19 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
               }}
               className="rounded-r-lg rounded-l-none p-4 shadow-sm border border-l-4 max-w-2xl transition-colors"
             >
+              {/* Quoted Parent Message (If this message is a Reply) */}
+              {msg.reply_to_snippet && (
+                <div
+                  style={{ borderLeftColor: borderHex }}
+                  className="mb-2.5 pl-2.5 py-1.5 bg-white/70 rounded-r-md border-l-2 text-xs"
+                >
+                  <p style={{ color: borderHex }} className="font-bold text-[11px]">
+                    ↪ {msg.reply_to_sender || 'Previous Message'}
+                  </p>
+                  <p className="text-slate-600 truncate text-[11px]">{msg.reply_to_snippet}</p>
+                </div>
+              )}
+
               <div className="flex items-center justify-between mb-1.5 gap-2">
                 <span style={{ color: borderHex }} className="text-xs font-bold">
                   {msg.profiles?.full_name} •{' '}
@@ -686,7 +731,38 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
                   )}
                   <span className="text-[11px] text-slate-500">
                     {new Date(msg.created_at).toLocaleDateString()}
+                    {msg.is_edited && <span className="italic ml-1 text-slate-400">(edited)</span>}
                   </span>
+
+                  {/* Reply / Quote Button */}
+                  {canManage && (
+                    <button
+                      onClick={() => {
+                        setReplyingTo(msg);
+                        inputRef.current?.focus();
+                      }}
+                      title="Reply / Quote this message"
+                      className="p-1 text-slate-400 hover:text-indigo-700 rounded transition"
+                    >
+                      <Reply size={13} />
+                    </button>
+                  )}
+
+                  {/* Edit Message Button */}
+                  {canEditThisMsg && msg.content && (
+                    <button
+                      onClick={() => {
+                        setEditingMsgId(msg.id);
+                        setEditedMsgText(msg.content);
+                      }}
+                      title="Edit message text"
+                      className="p-1 text-slate-400 hover:text-slate-800 rounded transition"
+                    >
+                      <Pencil size={13} />
+                    </button>
+                  )}
+
+                  {/* Pin Button */}
                   {canManage && !isDirectChat && (
                     <button
                       onClick={() => handleTogglePin(msg)}
@@ -698,6 +774,8 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
                       <Pin size={13} />
                     </button>
                   )}
+
+                  {/* Delete Button */}
                   {canManage && (isAdmin || msg.sender_id === currentUser.id || currentUser.role === 'staff') && (
                     <button
                       onClick={() => handleDeleteMessage(msg)}
@@ -710,7 +788,39 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
                 </div>
               </div>
 
-              {msg.content && <p className="text-slate-800 text-sm whitespace-pre-wrap mb-2">{msg.content}</p>}
+              {/* Inline Message Editor or Normal Message Content */}
+              {isEditingThis ? (
+                <div className="space-y-2 my-2">
+                  <textarea
+                    rows={3}
+                    value={editedMsgText}
+                    onChange={(e) => setEditedMsgText(e.target.value)}
+                    autoFocus
+                    className="w-full p-2.5 bg-white border border-slate-300 rounded-xl text-sm text-slate-800 focus:outline-none focus:border-slate-600"
+                  />
+                  <div className="flex items-center gap-2 justify-end">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingMsgId(null);
+                        setEditedMsgText('');
+                      }}
+                      className="px-3 py-1 rounded-lg bg-slate-200 hover:bg-slate-300 text-slate-700 text-xs font-semibold"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleSaveEditedMessage(msg.id)}
+                      className={`${roomTheme.btnBg} text-white px-3 py-1 rounded-lg text-xs font-bold`}
+                    >
+                      Save Changes
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                msg.content && <p className="text-slate-800 text-sm whitespace-pre-wrap mb-2">{msg.content}</p>
+              )}
 
               {msg.media_url && (
                 <div className="mt-2 bg-white/80 p-3 rounded-xl border border-slate-200/80">
@@ -792,6 +902,27 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
         <div ref={bottomRef} />
       </div>
 
+      {/* Active Reply Quote Bar Above Input */}
+      {canManage && replyingTo && (
+        <div className="bg-slate-100 border-t border-slate-200 px-4 py-2 flex items-center justify-between gap-3">
+          <div className="min-w-0 border-l-2 border-indigo-600 pl-2.5">
+            <p className="text-[11px] font-bold text-indigo-800">
+              Replying to {replyingTo.profiles?.full_name}
+            </p>
+            <p className="text-xs text-slate-600 truncate">
+              {replyingTo.content || `[Attachment: ${replyingTo.file_name || 'Media'}]`}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setReplyingTo(null)}
+            className="text-slate-400 hover:text-slate-700 p-1 shrink-0"
+          >
+            <X size={15} />
+          </button>
+        </div>
+      )}
+
       {/* Input Area */}
       {canManage ? (
         <form onSubmit={handleSend} className="p-3 bg-white border-t border-slate-200 flex items-center gap-2">
@@ -805,6 +936,7 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
             />
           </label>
           <input
+            ref={inputRef}
             type="text"
             value={text}
             onChange={(e) => setText(e.target.value)}

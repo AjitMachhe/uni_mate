@@ -3,7 +3,6 @@ import { supabase } from './supabaseClient';
 import AuthScreen from './components/AuthScreen';
 import ChatRoom from './components/ChatRoom';
 import AdminDashboard from './components/AdminDashboard';
-
 import {
   LogOut, Plus, Shield, MessageCircle, Menu, X,
   GraduationCap, Bell, BellRing, Lock, KeyRound, UserCheck, Trash2, Smartphone
@@ -44,102 +43,6 @@ const ROLE_THEMES = {
   },
 };
 
-const [notifPermission, setNotifPermission] = useState(
-  typeof Notification !== 'undefined' ? Notification.permission : 'default'
-);
-
-async function triggerSystemNotification(title, bodyText) {
-  if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
-
-  try {
-    if ('serviceWorker' in navigator) {
-      const reg = await navigator.serviceWorker.ready;
-      if (reg && reg.showNotification) {
-        await reg.showNotification(title, {
-          body: bodyText,
-          icon: '/app-icon.svg',
-          badge: '/app-icon.svg',
-          vibrate: [200, 100, 200],
-          tag: 'uni-mate-alert',
-        });
-        return;
-      }
-    }
-    new Notification(title, { body: bodyText, icon: '/app-icon.svg' });
-  } catch {
-    // Fallback handled by in-app toast banner
-  }
-}
-
-async function handleEnableNotifications() {
-  if (typeof Notification === 'undefined') {
-    alert('This browser does not support push notifications.');
-    return;
-  }
-  const result = await Notification.requestPermission();
-  setNotifPermission(result);
-  if (result === 'granted') {
-    playNotificationChime();
-    await triggerSystemNotification(
-      'uni_mate Alerts Active',
-      'You will now receive live university circulars & messages.'
-    );
-  } else {
-    alert('Notifications are blocked in your browser settings. Please allow notifications for uni-mate-green.vercel.app.');
-  }
-}
-
-useEffect(() => {
-  if (!profile) return;
-
-  const globalChannel = supabase
-    .channel(`global-uni-messages-${profile.id}`)
-    .on(
-      'postgres_changes',
-      { event: 'INSERT', schema: 'public', table: 'messages' },
-      (payload) => {
-        const newMsg = payload.new;
-        if (newMsg.sender_id === profile.id) return;
-
-        playNotificationChime();
-
-        const isViewingSameGroup = activeGroupRef.current?.id === newMsg.group_id;
-        if (!isViewingSameGroup) {
-          setUnreadCounts((prev) => ({
-            ...prev,
-            [newMsg.group_id]: (prev[newMsg.group_id] || 0) + 1,
-          }));
-        }
-
-        const previewText = newMsg.content || `New attachment: ${newMsg.file_name || 'Media'}`;
-        setToastAlert(previewText);
-        setTimeout(() => setToastAlert(null), 5000);
-
-        if (!isViewingSameGroup || document.hidden) {
-          triggerSystemNotification('uni_mate • New Message', previewText);
-        }
-      }
-    )
-    .on(
-      'postgres_changes',
-      { event: '*', schema: 'public', table: 'group_members', filter: `user_id=eq.${profile.id}` },
-      () => loadGroups()
-    )
-    .on(
-      'postgres_changes',
-      { event: 'DELETE', schema: 'public', table: 'groups' },
-      (payload) => {
-        if (activeGroupRef.current?.id === payload.old.id) {
-          setActiveGroup(null);
-        }
-        loadGroups();
-      }
-    )
-    .subscribe();
-
-  return () => supabase.removeChannel(globalChannel);
-}, [profile]);
-
 export default function App() {
   const [session, setSession] = useState(null);
   const [profile, setProfile] = useState(null);
@@ -160,21 +63,20 @@ export default function App() {
   const [newPassword, setNewPassword] = useState('');
   const [pwdStatus, setPwdStatus] = useState('');
 
+  // PWA Install & Notifications state
+  const [deferredPrompt, setDeferredPrompt] = useState(null);
+  const [showIosInstallHelp, setShowIosInstallHelp] = useState(false);
+  const [notifPermission, setNotifPermission] = useState(
+    typeof window !== 'undefined' && 'Notification' in window ? window.Notification.permission : 'default'
+  );
+
   const [unreadCounts, setUnreadCounts] = useState({});
   const [toastAlert, setToastAlert] = useState(null);
   const activeGroupRef = useRef(null);
-  const [deferredPrompt, setDeferredPrompt] = useState(null);
-  const [showIosInstallHelp, setShowIosInstallHelp] = useState(false);
 
-  <button
-  onClick={handleEnableNotifications}
-  title={notifPermission === 'granted' ? 'Notifications Enabled (Click to Test)' : 'Enable Desktop & Mobile Alerts'}
-  className={`p-2 rounded-lg hover:bg-white transition ${
-    notifPermission === 'granted' ? 'text-emerald-600' : 'text-amber-600 animate-pulse'
-  }`}
->
-  <BellRing size={17} />
-</button>
+  useEffect(() => {
+    activeGroupRef.current = activeGroup;
+  }, [activeGroup]);
 
   useEffect(() => {
     const handleBeforeInstallPrompt = (e) => {
@@ -184,20 +86,6 @@ export default function App() {
     window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
     return () => window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
   }, []);
-
-  async function handleInstallAppClick() {
-    if (deferredPrompt) {
-      deferredPrompt.prompt();
-      const { outcome } = await deferredPrompt.userChoice;
-      if (outcome === 'accepted') setDeferredPrompt(null);
-    } else {
-      setShowIosInstallHelp(true);
-    }
-  }
-
-  useEffect(() => {
-    activeGroupRef.current = activeGroup;
-  }, [activeGroup]);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -218,15 +106,63 @@ export default function App() {
     return () => subscription.unsubscribe();
   }, []);
 
+  async function triggerSystemNotification(title, bodyText) {
+    if (typeof window === 'undefined' || !('Notification' in window)) return;
+    if (window.Notification.permission !== 'granted') return;
+
+    try {
+      if ('serviceWorker' in navigator) {
+        const reg = await navigator.serviceWorker.ready;
+        if (reg && reg.showNotification) {
+          await reg.showNotification(title, {
+            body: bodyText,
+            icon: '/app-icon.svg',
+            badge: '/app-icon.svg',
+            vibrate: [200, 100, 200],
+            tag: 'uni-mate-alert',
+          });
+          return;
+        }
+      }
+      new window.Notification(title, { body: bodyText, icon: '/app-icon.svg' });
+    } catch {
+      // Fallback handled by in-app toast banner
+    }
+  }
+
+  async function handleEnableNotifications() {
+    if (typeof window === 'undefined' || !('Notification' in window)) {
+      alert('This browser does not support push notifications.');
+      return;
+    }
+    const result = await window.Notification.requestPermission();
+    setNotifPermission(result);
+    if (result === 'granted') {
+      playNotificationChime();
+      await triggerSystemNotification(
+        'uni_mate Alerts Active',
+        'You will now receive live university circulars & messages.'
+      );
+    } else {
+      alert('Notifications are blocked in your browser settings. Please allow notifications for this site.');
+    }
+  }
+
+  async function handleInstallAppClick() {
+    if (deferredPrompt) {
+      deferredPrompt.prompt();
+      const { outcome } = await deferredPrompt.userChoice;
+      if (outcome === 'accepted') setDeferredPrompt(null);
+    } else {
+      setShowIosInstallHelp((prev) => !prev);
+    }
+  }
+
   useEffect(() => {
     if (!profile) return;
 
-    if ('Notification' in window && Notification.permission === 'default') {
-      Notification.requestPermission();
-    }
-
     const globalChannel = supabase
-      .channel('global-uni-messages')
+      .channel(`global-uni-messages-${profile.id}`)
       .on(
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'messages' },
@@ -236,20 +172,20 @@ export default function App() {
 
           playNotificationChime();
 
-          if (!activeGroupRef.current || activeGroupRef.current.id !== newMsg.group_id) {
+          const isViewingSameGroup = activeGroupRef.current?.id === newMsg.group_id;
+          if (!isViewingSameGroup) {
             setUnreadCounts((prev) => ({
               ...prev,
               [newMsg.group_id]: (prev[newMsg.group_id] || 0) + 1,
             }));
           }
 
-          setToastAlert(newMsg.content || `New attachment: ${newMsg.file_name || 'Media'}`);
+          const previewText = newMsg.content || `New attachment: ${newMsg.file_name || 'Media'}`;
+          setToastAlert(previewText);
           setTimeout(() => setToastAlert(null), 5000);
 
-          if ('Notification' in window && Notification.permission === 'granted' && document.hidden) {
-            new Notification('uni_mate • New Message', {
-              body: newMsg.content || `New file shared: ${newMsg.file_name}`,
-            });
+          if (!isViewingSameGroup || document.hidden) {
+            triggerSystemNotification('uni_mate • New Message', previewText);
           }
         }
       )
@@ -332,7 +268,6 @@ export default function App() {
     }
   }
 
-  // Start or open a private 1-on-1 Staff Chat with a colleague
   async function handleStartDirectStaffChat(colleague) {
     const pairKey = [profile.id, colleague.id].sort().join('_');
     const dmTag = `dm:${pairKey}`;
@@ -462,7 +397,7 @@ export default function App() {
         <p className="text-red-600 font-bold text-sm">Profile Load Error: {profileError}</p>
         <button
           onClick={() => supabase.auth.signOut()}
-          className="bg-brand-maroon text-white px-4 py-2 rounded-xl text-xs font-semibold"
+          className="bg-[#800000] text-white px-4 py-2 rounded-xl text-xs font-semibold"
         >
           Sign Out & Retry
         </button>
@@ -471,14 +406,13 @@ export default function App() {
   }
 
   if (!profile) {
-    return <div className="h-screen flex items-center justify-center text-brand-maroon font-semibold">Loading uni_mate...</div>;
+    return <div className="h-screen flex items-center justify-center text-[#800000] font-semibold">Loading uni_mate...</div>;
   }
 
   const isStaffOrAdmin = profile.role === 'admin' || profile.role === 'staff';
   const theme = ROLE_THEMES[profile.role] || ROLE_THEMES.student;
   const totalUnread = Object.values(unreadCounts).reduce((a, b) => a + b, 0);
 
-  // Separate formal groups from 1-on-1 direct chats
   const regularGroups = groups.filter((g) => !g.description?.startsWith('dm:'));
   const directChats = groups.filter((g) => g.description?.startsWith('dm:'));
 
@@ -566,6 +500,15 @@ export default function App() {
           </div>
           <div className="flex items-center gap-1 shrink-0">
             <button
+              onClick={handleEnableNotifications}
+              title={notifPermission === 'granted' ? 'Alerts Active (Click to Test)' : 'Enable Desktop & Mobile Alerts'}
+              className={`p-2 rounded-lg hover:bg-white transition ${
+                notifPermission === 'granted' ? 'text-emerald-600' : 'text-amber-600 animate-pulse'
+              }`}
+            >
+              <BellRing size={17} />
+            </button>
+            <button
               onClick={() => setShowPwdModal(true)}
               title="Change Password"
               className="p-2 text-slate-500 hover:text-slate-900 rounded-lg hover:bg-white transition"
@@ -580,6 +523,31 @@ export default function App() {
               <LogOut size={17} />
             </button>
           </div>
+        </div>
+
+        {/* Install Mobile App Button (PWA) */}
+        <div className="px-3 pt-2.5 pb-1">
+          <button
+            onClick={handleInstallAppClick}
+            className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-xl text-xs font-bold bg-amber-50 hover:bg-amber-100 text-amber-950 border border-amber-300 transition"
+          >
+            <Smartphone size={15} className="text-[#800000]" />
+            <span>Install uni_mate App</span>
+          </button>
+
+          {showIosInstallHelp && (
+            <div className="mt-2 p-2.5 bg-slate-900 text-white rounded-xl text-[11px] space-y-1 relative">
+              <button
+                onClick={() => setShowIosInstallHelp(false)}
+                className="absolute top-1.5 right-2 text-slate-400 hover:text-white"
+              >
+                ✕
+              </button>
+              <p className="font-bold text-amber-300">Install on Phone:</p>
+              <p>• <strong>Android Chrome:</strong> Tap <strong>⋮</strong> (top right) → <strong>Install app</strong></p>
+              <p>• <strong>iPhone Safari:</strong> Tap <strong>Share (↑)</strong> → <strong>Add to Home Screen</strong></p>
+            </div>
+          )}
         </div>
 
         {/* Admin Dashboard Button */}
@@ -637,7 +605,7 @@ export default function App() {
             </form>
           )}
 
-          {/* Formal Groups List (Excludes 1-on-1 DMs) */}
+          {/* Formal Groups List */}
           <div className="px-3 space-y-1">
             {regularGroups.map((grp) => {
               const unread = unreadCounts[grp.id] || 0;
@@ -675,7 +643,7 @@ export default function App() {
             })}
           </div>
 
-          {/* Direct 1-on-1 Staff Chat Section (Separated cleanly from Groups) */}
+          {/* Direct 1-on-1 Staff Chat Section */}
           {isStaffOrAdmin && colleagues.length > 0 && (
             <div className="mt-5 pt-4 border-t border-slate-100">
               <div className="px-4 pb-2">
@@ -740,30 +708,6 @@ export default function App() {
               </div>
             </div>
           )}
-          {/* Install Mobile App Button (PWA) */}
-<div className="px-3 pt-2.5 pb-1">
-  <button
-    onClick={handleInstallAppClick}
-    className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-xl text-xs font-bold bg-amber-50 hover:bg-amber-100 text-amber-950 border border-amber-300 transition"
-  >
-    <Smartphone size={15} className="text-[#800000]" />
-    <span>Install uni_mate App</span>
-  </button>
-
-  {showIosInstallHelp && (
-    <div className="mt-2 p-2.5 bg-slate-900 text-white rounded-xl text-[11px] space-y-1 relative">
-      <button
-        onClick={() => setShowIosInstallHelp(false)}
-        className="absolute top-1.5 right-2 text-slate-400 hover:text-white"
-      >
-        ✕
-      </button>
-      <p className="font-bold text-amber-300">Install on Phone:</p>
-      <p>• <strong>Android Chrome:</strong> Tap <strong>⋮</strong> (top right) → <strong>Install app</strong></p>
-      <p>• <strong>iPhone Safari:</strong> Tap <strong>Share (↑)</strong> → <strong>Add to Home Screen</strong></p>
-    </div>
-  )}
-</div>
         </div>
       </aside>
 

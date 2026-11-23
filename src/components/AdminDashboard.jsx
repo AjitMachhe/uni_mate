@@ -3,7 +3,7 @@ import { createClient } from '@supabase/supabase-js';
 import { supabase } from '../supabaseClient';
 import {
   Shield, Check, X, Trash2, MessageSquare, Users, UserPlus,
-  FolderKanban, Pencil, Search, GraduationCap
+  FolderKanban, Pencil, Search, GraduationCap, Palette, RotateCcw
 } from 'lucide-react';
 
 const tempAuthClient = createClient(
@@ -20,12 +20,22 @@ export default function AdminDashboard({ onGroupsChanged }) {
   const [creating, setCreating] = useState(false);
   const [statusMsg, setStatusMsg] = useState('');
 
+  // Global Chat Bubble Theme Studio state
+  const [themeColors, setThemeColors] = useState({
+    admin_bg_color: '#fff5f5',
+    admin_border_color: '#800000',
+    staff_bg_color: '#eef2ff',
+    staff_border_color: '#4338ca',
+  });
+  const [savingColors, setSavingColors] = useState(false);
+  const [colorSavedToast, setColorSavedToast] = useState('');
+
   // Group rename state
   const [editingGroupId, setEditingGroupId] = useState(null);
   const [editedGroupName, setEditedGroupName] = useState('');
 
   // Directory filter state
-  const [userFilter, setUserFilter] = useState('all'); // 'all' | 'staff' | 'student' | 'parent'
+  const [userFilter, setUserFilter] = useState('all');
   const [userSearch, setUserSearch] = useState('');
 
   const [newUser, setNewUser] = useState({
@@ -42,6 +52,16 @@ export default function AdminDashboard({ onGroupsChanged }) {
   }, []);
 
   async function loadAdminData() {
+    const { data: settings } = await supabase.from('app_settings').select('*').eq('id', 1).maybeSingle();
+    if (settings) {
+      setThemeColors({
+        admin_bg_color: settings.admin_bg_color || '#fff5f5',
+        admin_border_color: settings.admin_border_color || '#800000',
+        staff_bg_color: settings.staff_bg_color || '#eef2ff',
+        staff_border_color: settings.staff_border_color || '#4338ca',
+      });
+    }
+
     const { data: reqs } = await supabase
       .from('access_requests')
       .select('*')
@@ -52,6 +72,7 @@ export default function AdminDashboard({ onGroupsChanged }) {
     const { data: grps } = await supabase
       .from('groups')
       .select('*, group_members(count)')
+      .not('description', 'like', 'dm:%')
       .order('created_at', { ascending: false });
     if (grps) setAllGroups(grps);
 
@@ -67,6 +88,39 @@ export default function AdminDashboard({ onGroupsChanged }) {
       .order('created_at', { ascending: false })
       .limit(20);
     if (msgs) setRecentMessages(msgs);
+  }
+
+  async function handleSaveGlobalColors() {
+    setSavingColors(true);
+    setColorSavedToast('');
+    const { error } = await supabase
+      .from('app_settings')
+      .upsert({ id: 1, ...themeColors, updated_at: new Date().toISOString() });
+
+    setSavingColors(false);
+    if (error) {
+      setColorSavedToast(`Error: ${error.message}`);
+    } else {
+      setColorSavedToast('Bubble colors saved & applied live across all chats!');
+      setTimeout(() => setColorSavedToast(''), 3500);
+    }
+  }
+
+  async function handleUpdateUserBubbleColor(userId, field, hexValue) {
+    setAllProfiles((prev) =>
+      prev.map((p) => (p.id === userId ? { ...p, [field]: hexValue } : p))
+    );
+    await supabase.from('profiles').update({ [field]: hexValue }).eq('id', userId);
+  }
+
+  async function handleResetUserBubbleColor(userId) {
+    setAllProfiles((prev) =>
+      prev.map((p) => (p.id === userId ? { ...p, bubble_bg_color: null, bubble_border_color: null } : p))
+    );
+    await supabase
+      .from('profiles')
+      .update({ bubble_bg_color: null, bubble_border_color: null })
+      .eq('id', userId);
   }
 
   function prefillFromRequest(req) {
@@ -173,7 +227,6 @@ export default function AdminDashboard({ onGroupsChanged }) {
     }
   }
 
-
   async function updateRequestStatus(id, status) {
     await supabase.from('access_requests').update({ status }).eq('id', id);
     loadAdminData();
@@ -207,7 +260,7 @@ export default function AdminDashboard({ onGroupsChanged }) {
           <h2 className="text-xl font-bold flex items-center gap-2">
             <Shield size={22} className="text-amber-400" /> Super Admin Control Center
           </h2>
-          <p className="text-xs text-red-100 mt-1">Manage groups, directory, user credentials, and all messages</p>
+          <p className="text-xs text-red-100 mt-1">Customize chat appearance, manage groups, directory, and credentials</p>
         </div>
         <div className="flex items-center gap-5 text-right">
           <div>
@@ -225,7 +278,130 @@ export default function AdminDashboard({ onGroupsChanged }) {
         </div>
       </div>
 
-      {/* 1. Manage All University Groups (Rename & Delete) */}
+      {/* 1. Chat Bubble Color Customizer (Fill & Border) */}
+      <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-5 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h3 className="font-bold text-slate-800 flex items-center gap-2 text-sm">
+              <Palette size={18} className="text-[#800000]" /> Chat Bubble Appearance Studio
+            </h3>
+            <p className="text-xs text-slate-500">Customize message background fill and left accent border colors live</p>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() =>
+                setThemeColors({
+                  admin_bg_color: '#fff5f5',
+                  admin_border_color: '#800000',
+                  staff_bg_color: '#eef2ff',
+                  staff_border_color: '#4338ca',
+                })
+              }
+              className="text-xs px-3 py-1.5 rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-50 flex items-center gap-1"
+            >
+              <RotateCcw size={13} /> Reset Defaults
+            </button>
+            <button
+              type="button"
+              onClick={handleSaveGlobalColors}
+              disabled={savingColors}
+              className="bg-[#800000] hover:bg-[#5a0000] text-white text-xs font-bold px-4 py-1.5 rounded-xl shadow-sm transition"
+            >
+              {savingColors ? 'Saving...' : 'Apply Colors Live'}
+            </button>
+          </div>
+        </div>
+
+        {colorSavedToast && (
+          <div className="p-2.5 rounded-xl bg-emerald-50 border border-emerald-200 text-xs text-emerald-900 font-semibold">
+            {colorSavedToast}
+          </div>
+        )}
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {/* Super Admin Bubble Controls + Live Preview */}
+          <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
+            <p className="text-xs font-bold text-slate-700 uppercase tracking-wider">Super Admin Message Bubble</p>
+            <div className="flex items-center gap-4">
+              <label className="flex items-center gap-2 text-xs text-slate-600 cursor-pointer">
+                <input
+                  type="color"
+                  value={themeColors.admin_bg_color}
+                  onChange={(e) => setThemeColors({ ...themeColors, admin_bg_color: e.target.value })}
+                  className="w-8 h-8 rounded cursor-pointer border-0 bg-transparent"
+                />
+                <span>Fill Color</span>
+              </label>
+              <label className="flex items-center gap-2 text-xs text-slate-600 cursor-pointer">
+                <input
+                  type="color"
+                  value={themeColors.admin_border_color}
+                  onChange={(e) => setThemeColors({ ...themeColors, admin_border_color: e.target.value })}
+                  className="w-8 h-8 rounded cursor-pointer border-0 bg-transparent"
+                />
+                <span>Border Color</span>
+              </label>
+            </div>
+            {/* Live Preview Card */}
+            <div
+              style={{
+                backgroundColor: themeColors.admin_bg_color,
+                borderColor: `${themeColors.admin_border_color}33`,
+                borderLeftColor: themeColors.admin_border_color,
+              }}
+              className="rounded-r-lg rounded-l-none p-3 shadow-sm border border-l-4"
+            >
+              <p style={{ color: themeColors.admin_border_color }} className="text-xs font-bold">
+                Super Admin • <span className="text-slate-600 font-normal">University Office</span>
+              </p>
+              <p className="text-xs text-slate-800 mt-1">Preview: Official university circular message.</p>
+            </div>
+          </div>
+
+          {/* Faculty / Staff Bubble Controls + Live Preview */}
+          <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
+            <p className="text-xs font-bold text-slate-700 uppercase tracking-wider">Faculty / Staff Message Bubble</p>
+            <div className="flex items-center gap-4">
+              <label className="flex items-center gap-2 text-xs text-slate-600 cursor-pointer">
+                <input
+                  type="color"
+                  value={themeColors.staff_bg_color}
+                  onChange={(e) => setThemeColors({ ...themeColors, staff_bg_color: e.target.value })}
+                  className="w-8 h-8 rounded cursor-pointer border-0 bg-transparent"
+                />
+                <span>Fill Color</span>
+              </label>
+              <label className="flex items-center gap-2 text-xs text-slate-600 cursor-pointer">
+                <input
+                  type="color"
+                  value={themeColors.staff_border_color}
+                  onChange={(e) => setThemeColors({ ...themeColors, staff_border_color: e.target.value })}
+                  className="w-8 h-8 rounded cursor-pointer border-0 bg-transparent"
+                />
+                <span>Border Color</span>
+              </label>
+            </div>
+            {/* Live Preview Card */}
+            <div
+              style={{
+                backgroundColor: themeColors.staff_bg_color,
+                borderColor: `${themeColors.staff_border_color}33`,
+                borderLeftColor: themeColors.staff_border_color,
+              }}
+              className="rounded-r-lg rounded-l-none p-3 shadow-sm border border-l-4"
+            >
+              <p style={{ color: themeColors.staff_border_color }} className="text-xs font-bold">
+                HoD / Faculty • <span className="text-slate-600 font-normal">Department</span>
+              </p>
+              <p className="text-xs text-slate-800 mt-1">Preview: Department lecture & lab schedule update.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* 2. Manage All University Groups */}
       <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-5">
         <h3 className="font-bold text-slate-800 mb-3 flex items-center gap-2 text-sm">
           <FolderKanban size={18} className="text-[#800000]" /> Manage All Groups ({allGroups.length})
@@ -295,7 +471,7 @@ export default function AdminDashboard({ onGroupsChanged }) {
         )}
       </div>
 
-      {/* 2. University Directory: All Staff, Students & Parents */}
+      {/* 3. University Directory (With Individual Bubble Color Customizer for Staff/Admin) */}
       <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-5">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
           <h3 className="font-bold text-slate-800 flex items-center gap-2 text-sm">
@@ -327,17 +503,16 @@ export default function AdminDashboard({ onGroupsChanged }) {
           </div>
         </div>
 
-        <div className="overflow-x-auto max-h-72 overflow-y-auto border border-slate-100 rounded-xl">
+        <div className="overflow-x-auto max-h-80 overflow-y-auto border border-slate-100 rounded-xl">
           <table className="w-full text-left border-collapse text-xs">
             <thead className="bg-slate-100 text-slate-600 uppercase text-[10px] sticky top-0">
               <tr>
                 <th className="py-2.5 px-3">Full Name</th>
                 <th className="py-2.5 px-3">Login ID</th>
                 <th className="py-2.5 px-3">Role</th>
-                <th className="py-2.5 px-3">Designation</th>
                 <th className="py-2.5 px-3">Department</th>
+                <th className="py-2.5 px-3">Custom Bubble (Fill / Border)</th>
                 <th className="py-2.5 px-3 text-right">Action</th>
-
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -352,28 +527,63 @@ export default function AdminDashboard({ onGroupsChanged }) {
                     ? 'bg-teal-100 text-teal-800'
                     : 'bg-emerald-100 text-emerald-800';
 
+                const isPoster = p.role === 'admin' || p.role === 'staff';
+
                 return (
                   <tr key={p.id} className="hover:bg-slate-50">
-                    <td className="py-2.5 px-3 font-semibold text-slate-800">{p.full_name}</td>
+                    <td className="py-2.5 px-3">
+                      <p className="font-semibold text-slate-800">{p.full_name}</p>
+                      <p className="text-[10px] text-slate-500">{p.designation || '-'}</p>
+                    </td>
                     <td className="py-2.5 px-3 text-slate-600 font-mono">{displayUsername}</td>
                     <td className="py-2.5 px-3">
                       <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${badgeColor}`}>
                         {p.role}
                       </span>
                     </td>
-                    <td className="py-2.5 px-3 text-slate-600">{p.designation || '-'}</td>
                     <td className="py-2.5 px-3 text-slate-600">{p.department || '-'}</td>
+                    <td className="py-2.5 px-3">
+                      {isPoster ? (
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="color"
+                            title="Custom Fill Color"
+                            value={p.bubble_bg_color || (p.role === 'admin' ? themeColors.admin_bg_color : themeColors.staff_bg_color)}
+                            onChange={(e) => handleUpdateUserBubbleColor(p.id, 'bubble_bg_color', e.target.value)}
+                            className="w-6 h-6 rounded cursor-pointer border border-slate-200"
+                          />
+                          <input
+                            type="color"
+                            title="Custom Border Color"
+                            value={p.bubble_border_color || (p.role === 'admin' ? themeColors.admin_border_color : themeColors.staff_border_color)}
+                            onChange={(e) => handleUpdateUserBubbleColor(p.id, 'bubble_border_color', e.target.value)}
+                            className="w-6 h-6 rounded cursor-pointer border border-slate-200"
+                          />
+                          {(p.bubble_bg_color || p.bubble_border_color) && (
+                            <button
+                              onClick={() => handleResetUserBubbleColor(p.id)}
+                              title="Reset to role default"
+                              className="text-[10px] text-slate-400 hover:text-slate-700 underline"
+                            >
+                              Reset
+                            </button>
+                          )}
+                        </div>
+                      ) : (
+                        <span className="text-[10px] text-slate-400">Read-only role</span>
+                      )}
+                    </td>
                     <td className="py-2.5 px-3 text-right">
-                 {p.role !== 'admin' && (
-                   <button
-                     onClick={() => handleDeleteUser(p)}
-                     title={`Delete ${p.full_name}`}
-                     className="text-slate-400 hover:text-red-600 p-1 rounded hover:bg-red-50 transition"
-                   >
-                     <Trash2 size={14} />
-                   </button>
-                 )}
-               </td>
+                      {p.role !== 'admin' && (
+                        <button
+                          onClick={() => handleDeleteUser(p)}
+                          title={`Delete ${p.full_name}`}
+                          className="text-slate-400 hover:text-red-600 p-1 rounded hover:bg-red-50 transition"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      )}
+                    </td>
                   </tr>
                 );
               })}
@@ -382,7 +592,7 @@ export default function AdminDashboard({ onGroupsChanged }) {
         </div>
       </div>
 
-      {/* 3. Create User Account Form */}
+      {/* 4. Create User Account Form */}
       <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-5">
         <h3 className="font-bold text-slate-800 mb-3 flex items-center gap-2 text-sm">
           <UserPlus size={18} className="text-[#800000]" /> Create Member Login Credentials
@@ -453,7 +663,7 @@ export default function AdminDashboard({ onGroupsChanged }) {
         </form>
       </div>
 
-      {/* 4. Pending Access Requests */}
+      {/* 5. Pending Access Requests */}
       <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-5">
         <h3 className="font-bold text-slate-800 mb-3 flex items-center gap-2 text-sm">
           <Users size={18} className="text-[#800000]" /> Pending Access Requests ({requests.length})
@@ -499,7 +709,7 @@ export default function AdminDashboard({ onGroupsChanged }) {
         )}
       </div>
 
-      {/* 5. Global Message Audit Feed */}
+      {/* 6. Global Message Audit Feed */}
       <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-5">
         <h3 className="font-bold text-slate-800 mb-3 flex items-center gap-2 text-sm">
           <MessageSquare size={18} className="text-[#800000]" /> Live University Communication Feed

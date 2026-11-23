@@ -12,10 +12,18 @@ const ROOM_THEMES = {
   parent: { headerBg: 'bg-teal-800', btnBg: 'bg-teal-700 hover:bg-teal-900' },
 };
 
+const DEFAULT_BUBBLE_COLORS = {
+  admin_bg_color: '#fff5f5',
+  admin_border_color: '#800000',
+  staff_bg_color: '#eef2ff',
+  staff_border_color: '#4338ca',
+};
+
 export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDeleted }) {
   const roomTheme = ROOM_THEMES[currentUser.role] || ROOM_THEMES.student;
 
   const [messages, setMessages] = useState([]);
+  const [bubbleSettings, setBubbleSettings] = useState(DEFAULT_BUBBLE_COLORS);
   const [readsByMessage, setReadsByMessage] = useState({});
   const [expandedReadsMsgId, setExpandedReadsMsgId] = useState(null);
   const [members, setMembers] = useState([]);
@@ -50,6 +58,23 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
   }, [messages.length]);
 
   useEffect(() => {
+    fetchBubbleSettings();
+
+    const settingsChannel = supabase
+      .channel('live-app-settings')
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'app_settings' },
+        (payload) => {
+          if (payload.new) setBubbleSettings(payload.new);
+        }
+      )
+      .subscribe();
+
+    return () => supabase.removeChannel(settingsChannel);
+  }, []);
+
+  useEffect(() => {
     setEditedName(group.name);
     setIsRenaming(false);
     setShowMembers(false);
@@ -81,10 +106,15 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
     return () => supabase.removeChannel(channel);
   }, [group.id]);
 
+  async function fetchBubbleSettings() {
+    const { data } = await supabase.from('app_settings').select('*').eq('id', 1).maybeSingle();
+    if (data) setBubbleSettings(data);
+  }
+
   async function fetchMessages() {
     const { data } = await supabase
       .from('messages')
-      .select('*, profiles(full_name, designation, role)')
+      .select('*, profiles(full_name, designation, role, bubble_bg_color, bubble_border_color)')
       .eq('group_id', group.id)
       .order('created_at', { ascending: true });
 
@@ -356,7 +386,7 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
         </div>
       )}
 
-      {/* Collapsible Member Drawer (Hidden for 1-on-1 DMs) */}
+      {/* Collapsible Member Drawer */}
       {showMembers && !isDirectChat && (
         <div className="bg-white border-b border-slate-200 p-4 shadow-inner max-h-80 overflow-y-auto space-y-4">
           {canManage && (
@@ -442,28 +472,38 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
         </div>
       )}
 
-      {/* Messages Feed */}
+      {/* Messages Feed (Custom Fill & Border Colors per User/Role) */}
       <div ref={messagesContainerRef} className="flex-1 overflow-y-auto p-4 space-y-4">
         {messages.map((msg) => {
           const isMsgAdmin = msg.profiles?.role === 'admin';
           const readers = readsByMessage[msg.id] || [];
           const isReadersExpanded = expandedReadsMsgId === msg.id;
 
+          // Priority: 1. Pinned amber highlight -> 2. Individual user custom color -> 3. Global Admin/Staff color
+          const fillHex = msg.is_pinned
+            ? '#fffbeb'
+            : msg.profiles?.bubble_bg_color ||
+              (isMsgAdmin ? bubbleSettings.admin_bg_color : bubbleSettings.staff_bg_color);
+
+          const borderHex = msg.is_pinned
+            ? '#f59e0b'
+            : msg.profiles?.bubble_border_color ||
+              (isMsgAdmin ? bubbleSettings.admin_border_color : bubbleSettings.staff_border_color);
+
           return (
             <div
               key={msg.id}
-              className={`bg-white rounded-r-lg rounded-l-none p-4 shadow-sm border-l-4 max-w-2xl ${
-                msg.is_pinned
-                  ? 'border-l-amber-500 border border-amber-200 bg-amber-50/30'
-                  : isMsgAdmin
-                  ? 'border-l-[#800000] border border-red-100'
-                  : 'border-l-indigo-700 border border-indigo-100'
-              }`}
+              style={{
+                backgroundColor: fillHex,
+                borderColor: `${borderHex}33`,
+                borderLeftColor: borderHex,
+              }}
+              className="rounded-r-lg rounded-l-none p-4 shadow-sm border border-l-4 max-w-2xl transition-colors"
             >
               <div className="flex items-center justify-between mb-1.5 gap-2">
-                <span className={`text-xs font-bold ${isMsgAdmin ? 'text-[#800000]' : 'text-indigo-800'}`}>
+                <span style={{ color: borderHex }} className="text-xs font-bold">
                   {msg.profiles?.full_name} •{' '}
-                  <span className="text-slate-500 font-normal">{msg.profiles?.designation}</span>
+                  <span className="text-slate-600 font-normal">{msg.profiles?.designation}</span>
                 </span>
                 <div className="flex items-center gap-2 shrink-0">
                   {msg.is_pinned && (
@@ -471,7 +511,7 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
                       <Pin size={10} /> Pinned
                     </span>
                   )}
-                  <span className="text-[11px] text-slate-400">
+                  <span className="text-[11px] text-slate-500">
                     {new Date(msg.created_at).toLocaleDateString()}
                   </span>
                   {canManage && !isDirectChat && (
@@ -491,7 +531,7 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
               {msg.content && <p className="text-slate-800 text-sm whitespace-pre-wrap mb-2">{msg.content}</p>}
 
               {msg.media_url && (
-                <div className="mt-2 bg-slate-50 p-3 rounded-xl border border-slate-200">
+                <div className="mt-2 bg-white/80 p-3 rounded-xl border border-slate-200/80">
                   {msg.media_type === 'image' && (
                     <img
                       src={msg.media_url}
@@ -531,11 +571,11 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
 
               {/* Seen By Read Receipts */}
               {canManage && (
-                <div className="mt-2.5 pt-2 border-t border-slate-100">
+                <div className="mt-2.5 pt-2 border-t border-black/5">
                   <button
                     type="button"
                     onClick={() => setExpandedReadsMsgId(isReadersExpanded ? null : msg.id)}
-                    className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-slate-500 hover:text-slate-800 transition"
+                    className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-slate-600 hover:text-slate-900 transition"
                   >
                     <Eye size={13} className="text-emerald-600" />
                     <span>
@@ -544,7 +584,7 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
                   </button>
 
                   {isReadersExpanded && (
-                    <div className="mt-2 bg-slate-50 rounded-lg p-2.5 border border-slate-200 space-y-1 max-h-36 overflow-y-auto">
+                    <div className="mt-2 bg-white/90 rounded-lg p-2.5 border border-slate-200 space-y-1 max-h-36 overflow-y-auto">
                       {readers.length === 0 ? (
                         <p className="text-[11px] text-slate-400">No members have opened this message yet.</p>
                       ) : (

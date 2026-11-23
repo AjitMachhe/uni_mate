@@ -3,7 +3,7 @@ import { createClient } from '@supabase/supabase-js';
 import { supabase } from '../supabaseClient';
 import {
   Shield, Check, X, Trash2, MessageSquare, Users, UserPlus,
-  FolderKanban, Pencil, Search, GraduationCap, Palette, RotateCcw
+  FolderKanban, Pencil, Search, GraduationCap, Palette, RotateCcw, KeyRound
 } from 'lucide-react';
 
 const tempAuthClient = createClient(
@@ -13,12 +13,19 @@ const tempAuthClient = createClient(
 );
 
 export default function AdminDashboard({ onGroupsChanged }) {
+  const [activeTab, setActiveTab] = useState('groups'); // 'groups' | 'directory' | 'create' | 'appearance' | 'feed'
   const [requests, setRequests] = useState([]);
   const [allGroups, setAllGroups] = useState([]);
   const [allProfiles, setAllProfiles] = useState([]);
   const [recentMessages, setRecentMessages] = useState([]);
   const [creating, setCreating] = useState(false);
   const [statusMsg, setStatusMsg] = useState('');
+
+  // Admin Reset Password Modal state
+  const [resetTargetUser, setResetTargetUser] = useState(null);
+  const [resetPwdValue, setResetPwdValue] = useState('');
+  const [resetPwdStatus, setResetPwdStatus] = useState('');
+  const [resettingPwd, setResettingPwd] = useState(false);
 
   // Global Chat Bubble Theme Studio state
   const [themeColors, setThemeColors] = useState({
@@ -69,12 +76,14 @@ export default function AdminDashboard({ onGroupsChanged }) {
       .order('created_at', { ascending: false });
     if (reqs) setRequests(reqs);
 
+    // Fetch all groups and filter out 1-on-1 DMs safely in JS (handles NULL descriptions properly)
     const { data: grps } = await supabase
       .from('groups')
       .select('*, group_members(count)')
-      .not('description', 'like', 'dm:%')
       .order('created_at', { ascending: false });
-    if (grps) setAllGroups(grps);
+    if (grps) {
+      setAllGroups(grps.filter((g) => !g.description?.startsWith('dm:')));
+    }
 
     const { data: profs } = await supabase
       .from('profiles')
@@ -86,8 +95,30 @@ export default function AdminDashboard({ onGroupsChanged }) {
       .from('messages')
       .select('*, profiles(full_name, designation), groups(name)')
       .order('created_at', { ascending: false })
-      .limit(20);
+      .limit(25);
     if (msgs) setRecentMessages(msgs);
+  }
+
+  async function handleAdminResetPassword(e) {
+    e.preventDefault();
+    if (!resetTargetUser || resetPwdValue.trim().length < 6) {
+      setResetPwdStatus('Password must be at least 6 characters.');
+      return;
+    }
+    setResettingPwd(true);
+    setResetPwdStatus('');
+
+    const { error } = await supabase.rpc('admin_reset_user_password', {
+      target_user_id: resetTargetUser.id,
+      new_password: resetPwdValue.trim(),
+    });
+
+    setResettingPwd(false);
+    if (error) {
+      setResetPwdStatus(`Error: ${error.message}`);
+    } else {
+      setResetPwdStatus(`Password updated! Share new password: ${resetPwdValue.trim()}`);
+    }
   }
 
   async function handleSaveGlobalColors() {
@@ -252,15 +283,87 @@ export default function AdminDashboard({ onGroupsChanged }) {
   const staffCount = allProfiles.filter((p) => p.role === 'staff' || p.role === 'admin').length;
   const studentParentCount = allProfiles.filter((p) => p.role === 'student' || p.role === 'parent').length;
 
+  const tabs = [
+    { id: 'groups', label: `Groups (${allGroups.length})`, icon: FolderKanban },
+    { id: 'directory', label: `Members & Passwords (${allProfiles.length})`, icon: GraduationCap },
+    { id: 'create', label: `Create & Requests${requests.length ? ` (${requests.length})` : ''}`, icon: UserPlus },
+    { id: 'appearance', label: 'Bubble Studio', icon: Palette },
+    { id: 'feed', label: 'Audit Feed', icon: MessageSquare },
+  ];
+
   return (
-    <div className="p-4 md:p-6 max-w-5xl mx-auto space-y-6 overflow-y-auto h-full">
-      {/* Banner */}
+    <div className="p-4 md:p-6 max-w-5xl mx-auto space-y-5 overflow-y-auto h-full">
+      {/* Admin Reset Any User Password Modal */}
+      {resetTargetUser && (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-sm w-full p-5 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="font-bold text-slate-800 text-sm flex items-center gap-2">
+                <KeyRound size={16} className="text-[#800000]" /> Reset User Password
+              </h3>
+              <button
+                onClick={() => {
+                  setResetTargetUser(null);
+                  setResetPwdValue('');
+                  setResetPwdStatus('');
+                }}
+                className="text-slate-400 hover:text-slate-700"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 text-xs">
+              <p className="font-bold text-slate-800">{resetTargetUser.full_name}</p>
+              <p className="text-slate-500 font-mono mt-0.5">
+                Login ID: {resetTargetUser.email.replace('@gmail.com', '')} • {resetTargetUser.role}
+              </p>
+            </div>
+
+            {resetPwdStatus && (
+              <div className="p-2.5 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-950 font-semibold select-all">
+                {resetPwdStatus}
+              </div>
+            )}
+
+            <form onSubmit={handleAdminResetPassword} className="space-y-3">
+              <div className="flex gap-1.5">
+                <input
+                  type="text"
+                  required
+                  minLength={6}
+                  placeholder="Enter new password (min 6 chars)"
+                  value={resetPwdValue}
+                  onChange={(e) => setResetPwdValue(e.target.value)}
+                  className="flex-1 px-3 py-2 border border-slate-300 rounded-xl text-xs focus:outline-none focus:border-[#800000]"
+                />
+                <button
+                  type="button"
+                  onClick={() => setResetPwdValue(Math.random().toString(36).slice(-6) + 'A1')}
+                  className="px-2.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-[11px] font-semibold"
+                >
+                  Auto
+                </button>
+              </div>
+              <button
+                type="submit"
+                disabled={resettingPwd}
+                className="w-full bg-[#800000] hover:bg-[#5a0000] text-white py-2.5 rounded-xl text-xs font-bold transition"
+              >
+                {resettingPwd ? 'Updating...' : 'Save New Password'}
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Header Banner */}
       <div className="bg-gradient-to-r from-[#800000] to-[#5a0000] text-white p-5 rounded-2xl shadow-md flex flex-wrap items-center justify-between gap-4">
         <div>
           <h2 className="text-xl font-bold flex items-center gap-2">
             <Shield size={22} className="text-amber-400" /> Super Admin Control Center
           </h2>
-          <p className="text-xs text-red-100 mt-1">Customize chat appearance, manage groups, directory, and credentials</p>
+          <p className="text-xs text-red-100 mt-1">Manage groups, members, passwords, colors, and communication logs</p>
         </div>
         <div className="flex items-center gap-5 text-right">
           <div>
@@ -278,465 +381,516 @@ export default function AdminDashboard({ onGroupsChanged }) {
         </div>
       </div>
 
-      {/* 1. Chat Bubble Color Customizer (Fill & Border) */}
-      <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-5 space-y-4">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div>
-            <h3 className="font-bold text-slate-800 flex items-center gap-2 text-sm">
-              <Palette size={18} className="text-[#800000]" /> Chat Bubble Appearance Studio
-            </h3>
-            <p className="text-xs text-slate-500">Customize message background fill and left accent border colors live</p>
-          </div>
-
-          <div className="flex items-center gap-2">
+      {/* Navigation Tabs */}
+      <div className="bg-white p-1.5 rounded-2xl shadow-sm border border-slate-200 flex flex-wrap gap-1.5">
+        {tabs.map((t) => {
+          const Icon = t.icon;
+          const isActive = activeTab === t.id;
+          return (
             <button
-              type="button"
-              onClick={() =>
-                setThemeColors({
-                  admin_bg_color: '#fff5f5',
-                  admin_border_color: '#800000',
-                  staff_bg_color: '#eef2ff',
-                  staff_border_color: '#4338ca',
-                })
-              }
-              className="text-xs px-3 py-1.5 rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-50 flex items-center gap-1"
+              key={t.id}
+              onClick={() => setActiveTab(t.id)}
+              className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition ${
+                isActive
+                  ? 'bg-[#800000] text-white shadow-sm'
+                  : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+              }`}
             >
-              <RotateCcw size={13} /> Reset Defaults
+              <Icon size={15} className={isActive ? 'text-amber-300' : 'text-slate-400'} />
+              <span>{t.label}</span>
             </button>
-            <button
-              type="button"
-              onClick={handleSaveGlobalColors}
-              disabled={savingColors}
-              className="bg-[#800000] hover:bg-[#5a0000] text-white text-xs font-bold px-4 py-1.5 rounded-xl shadow-sm transition"
-            >
-              {savingColors ? 'Saving...' : 'Apply Colors Live'}
-            </button>
-          </div>
-        </div>
-
-        {colorSavedToast && (
-          <div className="p-2.5 rounded-xl bg-emerald-50 border border-emerald-200 text-xs text-emerald-900 font-semibold">
-            {colorSavedToast}
-          </div>
-        )}
-
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {/* Super Admin Bubble Controls + Live Preview */}
-          <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
-            <p className="text-xs font-bold text-slate-700 uppercase tracking-wider">Super Admin Message Bubble</p>
-            <div className="flex items-center gap-4">
-              <label className="flex items-center gap-2 text-xs text-slate-600 cursor-pointer">
-                <input
-                  type="color"
-                  value={themeColors.admin_bg_color}
-                  onChange={(e) => setThemeColors({ ...themeColors, admin_bg_color: e.target.value })}
-                  className="w-8 h-8 rounded cursor-pointer border-0 bg-transparent"
-                />
-                <span>Fill Color</span>
-              </label>
-              <label className="flex items-center gap-2 text-xs text-slate-600 cursor-pointer">
-                <input
-                  type="color"
-                  value={themeColors.admin_border_color}
-                  onChange={(e) => setThemeColors({ ...themeColors, admin_border_color: e.target.value })}
-                  className="w-8 h-8 rounded cursor-pointer border-0 bg-transparent"
-                />
-                <span>Border Color</span>
-              </label>
-            </div>
-            {/* Live Preview Card */}
-            <div
-              style={{
-                backgroundColor: themeColors.admin_bg_color,
-                borderColor: `${themeColors.admin_border_color}33`,
-                borderLeftColor: themeColors.admin_border_color,
-              }}
-              className="rounded-r-lg rounded-l-none p-3 shadow-sm border border-l-4"
-            >
-              <p style={{ color: themeColors.admin_border_color }} className="text-xs font-bold">
-                Super Admin • <span className="text-slate-600 font-normal">University Office</span>
-              </p>
-              <p className="text-xs text-slate-800 mt-1">Preview: Official university circular message.</p>
-            </div>
-          </div>
-
-          {/* Faculty / Staff Bubble Controls + Live Preview */}
-          <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
-            <p className="text-xs font-bold text-slate-700 uppercase tracking-wider">Faculty / Staff Message Bubble</p>
-            <div className="flex items-center gap-4">
-              <label className="flex items-center gap-2 text-xs text-slate-600 cursor-pointer">
-                <input
-                  type="color"
-                  value={themeColors.staff_bg_color}
-                  onChange={(e) => setThemeColors({ ...themeColors, staff_bg_color: e.target.value })}
-                  className="w-8 h-8 rounded cursor-pointer border-0 bg-transparent"
-                />
-                <span>Fill Color</span>
-              </label>
-              <label className="flex items-center gap-2 text-xs text-slate-600 cursor-pointer">
-                <input
-                  type="color"
-                  value={themeColors.staff_border_color}
-                  onChange={(e) => setThemeColors({ ...themeColors, staff_border_color: e.target.value })}
-                  className="w-8 h-8 rounded cursor-pointer border-0 bg-transparent"
-                />
-                <span>Border Color</span>
-              </label>
-            </div>
-            {/* Live Preview Card */}
-            <div
-              style={{
-                backgroundColor: themeColors.staff_bg_color,
-                borderColor: `${themeColors.staff_border_color}33`,
-                borderLeftColor: themeColors.staff_border_color,
-              }}
-              className="rounded-r-lg rounded-l-none p-3 shadow-sm border border-l-4"
-            >
-              <p style={{ color: themeColors.staff_border_color }} className="text-xs font-bold">
-                HoD / Faculty • <span className="text-slate-600 font-normal">Department</span>
-              </p>
-              <p className="text-xs text-slate-800 mt-1">Preview: Department lecture & lab schedule update.</p>
-            </div>
-          </div>
-        </div>
+          );
+        })}
       </div>
 
-      {/* 2. Manage All University Groups */}
-      <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-5">
-        <h3 className="font-bold text-slate-800 mb-3 flex items-center gap-2 text-sm">
-          <FolderKanban size={18} className="text-[#800000]" /> Manage All Groups ({allGroups.length})
-        </h3>
-        {allGroups.length === 0 ? (
-          <p className="text-xs text-slate-500">No groups created yet.</p>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            {allGroups.map((grp) => (
-              <div key={grp.id} className="p-3 bg-slate-50 rounded-xl border border-slate-200 flex items-center justify-between gap-2">
-                {editingGroupId === grp.id ? (
-                  <div className="flex items-center gap-1.5 flex-1">
-                    <input
-                      type="text"
-                      value={editedGroupName}
-                      onChange={(e) => setEditedGroupName(e.target.value)}
-                      autoFocus
-                      className="flex-1 px-2.5 py-1 bg-white border border-slate-300 rounded-lg text-xs font-bold focus:outline-none focus:border-[#800000]"
-                    />
-                    <button
-                      onClick={() => handleRenameGroup(grp.id)}
-                      className="p-1.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700"
-                      title="Save"
-                    >
-                      <Check size={14} />
-                    </button>
-                    <button
-                      onClick={() => setEditingGroupId(null)}
-                      className="p-1.5 bg-slate-200 text-slate-700 rounded-lg hover:bg-slate-300"
-                      title="Cancel"
-                    >
-                      <X size={14} />
-                    </button>
-                  </div>
-                ) : (
-                  <>
-                    <div className="min-w-0">
-                      <p className="font-bold text-sm text-slate-800 truncate">{grp.name}</p>
-                      <p className="text-[11px] text-slate-500">
-                        {grp.department || 'General'} • {grp.group_members?.[0]?.count ?? 0} members
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-1.5 shrink-0">
-                      <button
-                        onClick={() => {
-                          setEditingGroupId(grp.id);
-                          setEditedGroupName(grp.name);
-                        }}
-                        title="Rename group"
-                        className="flex items-center gap-1 px-2.5 py-1.5 bg-white border border-slate-200 hover:border-[#800000] text-slate-700 hover:text-[#800000] rounded-lg text-xs font-medium transition"
-                      >
-                        <Pencil size={13} /> Rename
-                      </button>
-                      <button
-                        onClick={() => handleDeleteGroup(grp)}
-                        title="Delete group"
-                        className="p-1.5 bg-white border border-slate-200 hover:bg-red-50 hover:border-red-200 text-slate-500 hover:text-red-600 rounded-lg transition"
-                      >
-                        <Trash2 size={14} />
-                      </button>
-                    </div>
-                  </>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* 3. University Directory (With Individual Bubble Color Customizer for Staff/Admin) */}
-      <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-5">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
-          <h3 className="font-bold text-slate-800 flex items-center gap-2 text-sm">
-            <GraduationCap size={18} className="text-[#800000]" /> University Members Directory ({filteredProfiles.length})
+      {/* TAB 1: MANAGE GROUPS */}
+      {activeTab === 'groups' && (
+        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-5">
+          <h3 className="font-bold text-slate-800 mb-3 flex items-center gap-2 text-sm">
+            <FolderKanban size={18} className="text-[#800000]" /> Manage All University Groups ({allGroups.length})
           </h3>
-
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="relative">
-              <Search size={13} className="absolute left-2.5 top-2 text-slate-400" />
-              <input
-                type="text"
-                value={userSearch}
-                onChange={(e) => setUserSearch(e.target.value)}
-                placeholder="Search name, dept..."
-                className="pl-7 pr-3 py-1 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:outline-none focus:border-[#800000]"
-              />
-            </div>
-            <select
-              value={userFilter}
-              onChange={(e) => setUserFilter(e.target.value)}
-              className="px-2.5 py-1 bg-slate-50 border border-slate-200 rounded-lg text-xs font-medium focus:outline-none focus:border-[#800000]"
-            >
-              <option value="all">All Roles ({allProfiles.length})</option>
-              <option value="staff">Staff / Faculty</option>
-              <option value="student">Students</option>
-              <option value="parent">Parents</option>
-              <option value="admin">Admins</option>
-            </select>
-          </div>
-        </div>
-
-        <div className="overflow-x-auto max-h-80 overflow-y-auto border border-slate-100 rounded-xl">
-          <table className="w-full text-left border-collapse text-xs">
-            <thead className="bg-slate-100 text-slate-600 uppercase text-[10px] sticky top-0">
-              <tr>
-                <th className="py-2.5 px-3">Full Name</th>
-                <th className="py-2.5 px-3">Login ID</th>
-                <th className="py-2.5 px-3">Role</th>
-                <th className="py-2.5 px-3">Department</th>
-                <th className="py-2.5 px-3">Custom Bubble (Fill / Border)</th>
-                <th className="py-2.5 px-3 text-right">Action</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {filteredProfiles.map((p) => {
-                const displayUsername = p.email.endsWith('@gmail.com') ? p.email.replace('@gmail.com', '') : p.email;
-                const badgeColor =
-                  p.role === 'admin'
-                    ? 'bg-red-100 text-[#800000]'
-                    : p.role === 'staff'
-                    ? 'bg-indigo-100 text-indigo-800'
-                    : p.role === 'parent'
-                    ? 'bg-teal-100 text-teal-800'
-                    : 'bg-emerald-100 text-emerald-800';
-
-                const isPoster = p.role === 'admin' || p.role === 'staff';
-
-                return (
-                  <tr key={p.id} className="hover:bg-slate-50">
-                    <td className="py-2.5 px-3">
-                      <p className="font-semibold text-slate-800">{p.full_name}</p>
-                      <p className="text-[10px] text-slate-500">{p.designation || '-'}</p>
-                    </td>
-                    <td className="py-2.5 px-3 text-slate-600 font-mono">{displayUsername}</td>
-                    <td className="py-2.5 px-3">
-                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${badgeColor}`}>
-                        {p.role}
-                      </span>
-                    </td>
-                    <td className="py-2.5 px-3 text-slate-600">{p.department || '-'}</td>
-                    <td className="py-2.5 px-3">
-                      {isPoster ? (
-                        <div className="flex items-center gap-2">
-                          <input
-                            type="color"
-                            title="Custom Fill Color"
-                            value={p.bubble_bg_color || (p.role === 'admin' ? themeColors.admin_bg_color : themeColors.staff_bg_color)}
-                            onChange={(e) => handleUpdateUserBubbleColor(p.id, 'bubble_bg_color', e.target.value)}
-                            className="w-6 h-6 rounded cursor-pointer border border-slate-200"
-                          />
-                          <input
-                            type="color"
-                            title="Custom Border Color"
-                            value={p.bubble_border_color || (p.role === 'admin' ? themeColors.admin_border_color : themeColors.staff_border_color)}
-                            onChange={(e) => handleUpdateUserBubbleColor(p.id, 'bubble_border_color', e.target.value)}
-                            className="w-6 h-6 rounded cursor-pointer border border-slate-200"
-                          />
-                          {(p.bubble_bg_color || p.bubble_border_color) && (
-                            <button
-                              onClick={() => handleResetUserBubbleColor(p.id)}
-                              title="Reset to role default"
-                              className="text-[10px] text-slate-400 hover:text-slate-700 underline"
-                            >
-                              Reset
-                            </button>
+          {allGroups.length === 0 ? (
+            <p className="text-xs text-slate-500">No groups created yet. Use "+ New Group" in the sidebar to create one.</p>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {allGroups.map((grp) => (
+                <div key={grp.id} className="p-3.5 bg-slate-50 rounded-xl border border-slate-200 flex items-center justify-between gap-2">
+                  {editingGroupId === grp.id ? (
+                    <div className="flex items-center gap-1.5 flex-1">
+                      <input
+                        type="text"
+                        value={editedGroupName}
+                        onChange={(e) => setEditedGroupName(e.target.value)}
+                        autoFocus
+                        className="flex-1 px-2.5 py-1 bg-white border border-slate-300 rounded-lg text-xs font-bold focus:outline-none focus:border-[#800000]"
+                      />
+                      <button
+                        onClick={() => handleRenameGroup(grp.id)}
+                        className="p-1.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700"
+                        title="Save"
+                      >
+                        <Check size={14} />
+                      </button>
+                      <button
+                        onClick={() => setEditingGroupId(null)}
+                        className="p-1.5 bg-slate-200 text-slate-700 rounded-lg hover:bg-slate-300"
+                        title="Cancel"
+                      >
+                        <X size={14} />
+                      </button>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="min-w-0">
+                        <p className="font-bold text-sm text-slate-800 truncate">
+                          {grp.name}{' '}
+                          {grp.is_staff_only && (
+                            <span className="ml-1.5 text-[10px] bg-indigo-100 text-indigo-800 px-2 py-0.5 rounded-full font-semibold">
+                              Staff Only
+                            </span>
                           )}
-                        </div>
-                      ) : (
-                        <span className="text-[10px] text-slate-400">Read-only role</span>
-                      )}
-                    </td>
-                    <td className="py-2.5 px-3 text-right">
-                      {p.role !== 'admin' && (
+                        </p>
+                        <p className="text-[11px] text-slate-500 mt-0.5">
+                          {grp.department || 'General'} • {grp.group_members?.[0]?.count ?? 0} members
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-1.5 shrink-0">
                         <button
-                          onClick={() => handleDeleteUser(p)}
-                          title={`Delete ${p.full_name}`}
-                          className="text-slate-400 hover:text-red-600 p-1 rounded hover:bg-red-50 transition"
+                          onClick={() => {
+                            setEditingGroupId(grp.id);
+                            setEditedGroupName(grp.name);
+                          }}
+                          title="Rename group"
+                          className="flex items-center gap-1 px-2.5 py-1.5 bg-white border border-slate-200 hover:border-[#800000] text-slate-700 hover:text-[#800000] rounded-lg text-xs font-medium transition"
+                        >
+                          <Pencil size={13} /> Rename
+                        </button>
+                        <button
+                          onClick={() => handleDeleteGroup(grp)}
+                          title="Delete group"
+                          className="p-1.5 bg-white border border-slate-200 hover:bg-red-50 hover:border-red-200 text-slate-500 hover:text-red-600 rounded-lg transition"
                         >
                           <Trash2 size={14} />
                         </button>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+                      </div>
+                    </>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
-      </div>
+      )}
 
-      {/* 4. Create User Account Form */}
-      <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-5">
-        <h3 className="font-bold text-slate-800 mb-3 flex items-center gap-2 text-sm">
-          <UserPlus size={18} className="text-[#800000]" /> Create Member Login Credentials
-        </h3>
+      {/* TAB 2: MEMBERS DIRECTORY, PASSWORD RESET & CUSTOM BUBBLE COLORS */}
+      {activeTab === 'directory' && (
+        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-5">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+            <h3 className="font-bold text-slate-800 flex items-center gap-2 text-sm">
+              <GraduationCap size={18} className="text-[#800000]" /> University Members Directory ({filteredProfiles.length})
+            </h3>
 
-        {statusMsg && (
-          <div className="mb-3 p-3 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-950 font-semibold select-all">
-            {statusMsg}
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="relative">
+                <Search size={13} className="absolute left-2.5 top-2 text-slate-400" />
+                <input
+                  type="text"
+                  value={userSearch}
+                  onChange={(e) => setUserSearch(e.target.value)}
+                  placeholder="Search name, dept..."
+                  className="pl-7 pr-3 py-1 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:outline-none focus:border-[#800000]"
+                />
+              </div>
+              <select
+                value={userFilter}
+                onChange={(e) => setUserFilter(e.target.value)}
+                className="px-2.5 py-1 bg-slate-50 border border-slate-200 rounded-lg text-xs font-medium focus:outline-none focus:border-[#800000]"
+              >
+                <option value="all">All Roles ({allProfiles.length})</option>
+                <option value="staff">Staff / Faculty</option>
+                <option value="student">Students</option>
+                <option value="parent">Parents</option>
+                <option value="admin">Admins</option>
+              </select>
+            </div>
           </div>
-        )}
 
-        <form onSubmit={handleCreateUser} className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
-          <input
-            type="text"
-            required
-            placeholder="Full Name (e.g. Amar Patil)"
-            value={newUser.full_name}
-            onChange={(e) => setNewUser({ ...newUser, full_name: e.target.value })}
-            className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:outline-none focus:border-[#800000]"
-          />
-          <input
-            type="text"
-            required
-            placeholder="Username (e.g. amar)"
-            value={newUser.username}
-            onChange={(e) => setNewUser({ ...newUser, username: e.target.value })}
-            className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:outline-none focus:border-[#800000]"
-          />
-          <input
-            type="text"
-            required
-            placeholder="Password (min 6 chars)"
-            value={newUser.password}
-            onChange={(e) => setNewUser({ ...newUser, password: e.target.value })}
-            className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:outline-none focus:border-[#800000]"
-          />
-          <select
-            value={newUser.role}
-            onChange={(e) => setNewUser({ ...newUser, role: e.target.value })}
-            className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:outline-none focus:border-[#800000]"
-          >
-            <option value="staff">Staff (HoD / Dean / Director / Faculty)</option>
-            <option value="student">Student (Read & Download Only)</option>
-            <option value="parent">Parent (Read & Download Only)</option>
-            <option value="admin">Super Admin</option>
-          </select>
-          <input
-            type="text"
-            placeholder="Designation (e.g. HoD CSE, FY Student)"
-            value={newUser.designation}
-            onChange={(e) => setNewUser({ ...newUser, designation: e.target.value })}
-            className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:outline-none focus:border-[#800000]"
-          />
-          <input
-            type="text"
-            placeholder="Department (e.g. CSE, Agri)"
-            value={newUser.department}
-            onChange={(e) => setNewUser({ ...newUser, department: e.target.value })}
-            className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:outline-none focus:border-[#800000]"
-          />
-          <button
-            type="submit"
-            disabled={creating}
-            className="sm:col-span-2 md:col-span-3 bg-[#800000] hover:bg-[#5a0000] text-white font-bold py-2.5 rounded-xl text-xs transition"
-          >
-            {creating ? 'Creating Account...' : 'Create Account & Generate Credentials'}
-          </button>
-        </form>
-      </div>
+          <div className="overflow-x-auto max-h-[28rem] overflow-y-auto border border-slate-100 rounded-xl">
+            <table className="w-full text-left border-collapse text-xs">
+              <thead className="bg-slate-100 text-slate-600 uppercase text-[10px] sticky top-0">
+                <tr>
+                  <th className="py-2.5 px-3">Full Name</th>
+                  <th className="py-2.5 px-3">Login ID</th>
+                  <th className="py-2.5 px-3">Role</th>
+                  <th className="py-2.5 px-3">Department</th>
+                  <th className="py-2.5 px-3">Bubble (Fill / Border)</th>
+                  <th className="py-2.5 px-3 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {filteredProfiles.map((p) => {
+                  const displayUsername = p.email.endsWith('@gmail.com') ? p.email.replace('@gmail.com', '') : p.email;
+                  const badgeColor =
+                    p.role === 'admin'
+                      ? 'bg-red-100 text-[#800000]'
+                      : p.role === 'staff'
+                      ? 'bg-indigo-100 text-indigo-800'
+                      : p.role === 'parent'
+                      ? 'bg-teal-100 text-teal-800'
+                      : 'bg-emerald-100 text-emerald-800';
 
-      {/* 5. Pending Access Requests */}
-      <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-5">
-        <h3 className="font-bold text-slate-800 mb-3 flex items-center gap-2 text-sm">
-          <Users size={18} className="text-[#800000]" /> Pending Access Requests ({requests.length})
-        </h3>
-        {requests.length === 0 ? (
-          <p className="text-xs text-slate-500">No pending requests right now.</p>
-        ) : (
+                  const isPoster = p.role === 'admin' || p.role === 'staff';
+
+                  return (
+                    <tr key={p.id} className="hover:bg-slate-50">
+                      <td className="py-2.5 px-3">
+                        <p className="font-semibold text-slate-800">{p.full_name}</p>
+                        <p className="text-[10px] text-slate-500">{p.designation || '-'}</p>
+                      </td>
+                      <td className="py-2.5 px-3 text-slate-600 font-mono">{displayUsername}</td>
+                      <td className="py-2.5 px-3">
+                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${badgeColor}`}>
+                          {p.role}
+                        </span>
+                      </td>
+                      <td className="py-2.5 px-3 text-slate-600">{p.department || '-'}</td>
+                      <td className="py-2.5 px-3">
+                        {isPoster ? (
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="color"
+                              title="Custom Fill Color"
+                              value={p.bubble_bg_color || (p.role === 'admin' ? themeColors.admin_bg_color : themeColors.staff_bg_color)}
+                              onChange={(e) => handleUpdateUserBubbleColor(p.id, 'bubble_bg_color', e.target.value)}
+                              className="w-6 h-6 rounded cursor-pointer border border-slate-200"
+                            />
+                            <input
+                              type="color"
+                              title="Custom Border Color"
+                              value={p.bubble_border_color || (p.role === 'admin' ? themeColors.admin_border_color : themeColors.staff_border_color)}
+                              onChange={(e) => handleUpdateUserBubbleColor(p.id, 'bubble_border_color', e.target.value)}
+                              className="w-6 h-6 rounded cursor-pointer border border-slate-200"
+                            />
+                            {(p.bubble_bg_color || p.bubble_border_color) && (
+                              <button
+                                onClick={() => handleResetUserBubbleColor(p.id)}
+                                title="Reset to role default"
+                                className="text-[10px] text-slate-400 hover:text-slate-700 underline"
+                              >
+                                Reset
+                              </button>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="text-[10px] text-slate-400">Read-only</span>
+                        )}
+                      </td>
+                      <td className="py-2.5 px-3 text-right">
+                        <div className="inline-flex items-center gap-1">
+                          <button
+                            onClick={() => {
+                              setResetTargetUser(p);
+                              setResetPwdValue('');
+                              setResetPwdStatus('');
+                            }}
+                            title={`Reset password for ${p.full_name}`}
+                            className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-200 text-[11px] font-semibold transition"
+                          >
+                            <KeyRound size={12} /> Reset Pwd
+                          </button>
+                          {p.role !== 'admin' && (
+                            <button
+                              onClick={() => handleDeleteUser(p)}
+                              title={`Delete ${p.full_name}`}
+                              className="text-slate-400 hover:text-red-600 p-1.5 rounded-lg hover:bg-red-50 transition"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* TAB 3: CREATE USER & PENDING ACCESS REQUESTS */}
+      {activeTab === 'create' && (
+        <div className="space-y-5">
+          <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-5">
+            <h3 className="font-bold text-slate-800 mb-3 flex items-center gap-2 text-sm">
+              <UserPlus size={18} className="text-[#800000]" /> Create Member Login Credentials
+            </h3>
+
+            {statusMsg && (
+              <div className="mb-3 p-3 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-950 font-semibold select-all">
+                {statusMsg}
+              </div>
+            )}
+
+            <form onSubmit={handleCreateUser} className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+              <input
+                type="text"
+                required
+                placeholder="Full Name (e.g. Amar Patil)"
+                value={newUser.full_name}
+                onChange={(e) => setNewUser({ ...newUser, full_name: e.target.value })}
+                className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:outline-none focus:border-[#800000]"
+              />
+              <input
+                type="text"
+                required
+                placeholder="Username (e.g. amar)"
+                value={newUser.username}
+                onChange={(e) => setNewUser({ ...newUser, username: e.target.value })}
+                className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:outline-none focus:border-[#800000]"
+              />
+              <input
+                type="text"
+                required
+                placeholder="Password (min 6 chars)"
+                value={newUser.password}
+                onChange={(e) => setNewUser({ ...newUser, password: e.target.value })}
+                className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:outline-none focus:border-[#800000]"
+              />
+              <select
+                value={newUser.role}
+                onChange={(e) => setNewUser({ ...newUser, role: e.target.value })}
+                className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:outline-none focus:border-[#800000]"
+              >
+                <option value="staff">Staff (HoD / Dean / Director / Faculty)</option>
+                <option value="student">Student (Read & Download Only)</option>
+                <option value="parent">Parent (Read & Download Only)</option>
+                <option value="admin">Super Admin</option>
+              </select>
+              <input
+                type="text"
+                placeholder="Designation (e.g. HoD CSE, FY Student)"
+                value={newUser.designation}
+                onChange={(e) => setNewUser({ ...newUser, designation: e.target.value })}
+                className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:outline-none focus:border-[#800000]"
+              />
+              <input
+                type="text"
+                placeholder="Department (e.g. CSE, Agri)"
+                value={newUser.department}
+                onChange={(e) => setNewUser({ ...newUser, department: e.target.value })}
+                className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:outline-none focus:border-[#800000]"
+              />
+              <button
+                type="submit"
+                disabled={creating}
+                className="sm:col-span-2 md:col-span-3 bg-[#800000] hover:bg-[#5a0000] text-white font-bold py-2.5 rounded-xl text-xs transition"
+              >
+                {creating ? 'Creating Account...' : 'Create Account & Generate Credentials'}
+              </button>
+            </form>
+          </div>
+
+          <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-5">
+            <h3 className="font-bold text-slate-800 mb-3 flex items-center gap-2 text-sm">
+              <Users size={18} className="text-[#800000]" /> Pending Access Requests ({requests.length})
+            </h3>
+            {requests.length === 0 ? (
+              <p className="text-xs text-slate-500">No pending requests right now.</p>
+            ) : (
+              <div className="space-y-3">
+                {requests.map((r) => (
+                  <div key={r.id} className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 bg-slate-50 rounded-xl border border-slate-200">
+                    <div>
+                      <p className="font-bold text-sm text-slate-800">
+                        {r.full_name}{' '}
+                        <span className="text-xs font-normal text-[#800000]">
+                          ({r.requested_role} • {r.department})
+                        </span>
+                      </p>
+                      <p className="text-xs text-slate-500">{r.email} | {r.phone}</p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => prefillFromRequest(r)}
+                        className="bg-amber-500 hover:bg-amber-600 text-slate-950 text-xs px-3 py-1.5 rounded-lg font-bold"
+                      >
+                        Fill Form
+                      </button>
+                      <button
+                        onClick={() => updateRequestStatus(r.id, 'approved')}
+                        className="flex items-center gap-1 bg-emerald-600 hover:bg-emerald-700 text-white text-xs px-3 py-1.5 rounded-lg font-medium"
+                      >
+                        <Check size={14} /> Done
+                      </button>
+                      <button
+                        onClick={() => updateRequestStatus(r.id, 'rejected')}
+                        className="flex items-center gap-1 bg-slate-200 hover:bg-red-100 hover:text-red-700 text-slate-700 text-xs px-3 py-1.5 rounded-lg font-medium"
+                      >
+                        <X size={14} />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* TAB 4: CHAT BUBBLE APPEARANCE STUDIO */}
+      {activeTab === 'appearance' && (
+        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-5 space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h3 className="font-bold text-slate-800 flex items-center gap-2 text-sm">
+                <Palette size={18} className="text-[#800000]" /> Chat Bubble Appearance Studio
+              </h3>
+              <p className="text-xs text-slate-500">Customize message background fill and left accent border colors live</p>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() =>
+                  setThemeColors({
+                    admin_bg_color: '#fff5f5',
+                    admin_border_color: '#800000',
+                    staff_bg_color: '#eef2ff',
+                    staff_border_color: '#4338ca',
+                  })
+                }
+                className="text-xs px-3 py-1.5 rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-50 flex items-center gap-1"
+              >
+                <RotateCcw size={13} /> Reset Defaults
+              </button>
+              <button
+                type="button"
+                onClick={handleSaveGlobalColors}
+                disabled={savingColors}
+                className="bg-[#800000] hover:bg-[#5a0000] text-white text-xs font-bold px-4 py-1.5 rounded-xl shadow-sm transition"
+              >
+                {savingColors ? 'Saving...' : 'Apply Colors Live'}
+              </button>
+            </div>
+          </div>
+
+          {colorSavedToast && (
+            <div className="p-2.5 rounded-xl bg-emerald-50 border border-emerald-200 text-xs text-emerald-900 font-semibold">
+              {colorSavedToast}
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {/* Super Admin Bubble Controls */}
+            <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
+              <p className="text-xs font-bold text-slate-700 uppercase tracking-wider">Super Admin Message Bubble</p>
+              <div className="flex items-center gap-4">
+                <label className="flex items-center gap-2 text-xs text-slate-600 cursor-pointer">
+                  <input
+                    type="color"
+                    value={themeColors.admin_bg_color}
+                    onChange={(e) => setThemeColors({ ...themeColors, admin_bg_color: e.target.value })}
+                    className="w-8 h-8 rounded cursor-pointer border-0 bg-transparent"
+                  />
+                  <span>Fill Color</span>
+                </label>
+                <label className="flex items-center gap-2 text-xs text-slate-600 cursor-pointer">
+                  <input
+                    type="color"
+                    value={themeColors.admin_border_color}
+                    onChange={(e) => setThemeColors({ ...themeColors, admin_border_color: e.target.value })}
+                    className="w-8 h-8 rounded cursor-pointer border-0 bg-transparent"
+                  />
+                  <span>Border Color</span>
+                </label>
+              </div>
+              <div
+                style={{
+                  backgroundColor: themeColors.admin_bg_color,
+                  borderColor: `${themeColors.admin_border_color}33`,
+                  borderLeftColor: themeColors.admin_border_color,
+                }}
+                className="rounded-r-lg rounded-l-none p-3 shadow-sm border border-l-4"
+              >
+                <p style={{ color: themeColors.admin_border_color }} className="text-xs font-bold">
+                  Super Admin • <span className="text-slate-600 font-normal">University Office</span>
+                </p>
+                <p className="text-xs text-slate-800 mt-1">Preview: Official university circular message.</p>
+              </div>
+            </div>
+
+            {/* Faculty / Staff Bubble Controls */}
+            <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
+              <p className="text-xs font-bold text-slate-700 uppercase tracking-wider">Faculty / Staff Message Bubble</p>
+              <div className="flex items-center gap-4">
+                <label className="flex items-center gap-2 text-xs text-slate-600 cursor-pointer">
+                  <input
+                    type="color"
+                    value={themeColors.staff_bg_color}
+                    onChange={(e) => setThemeColors({ ...themeColors, staff_bg_color: e.target.value })}
+                    className="w-8 h-8 rounded cursor-pointer border-0 bg-transparent"
+                  />
+                  <span>Fill Color</span>
+                </label>
+                <label className="flex items-center gap-2 text-xs text-slate-600 cursor-pointer">
+                  <input
+                    type="color"
+                    value={themeColors.staff_border_color}
+                    onChange={(e) => setThemeColors({ ...themeColors, staff_border_color: e.target.value })}
+                    className="w-8 h-8 rounded cursor-pointer border-0 bg-transparent"
+                  />
+                  <span>Border Color</span>
+                </label>
+              </div>
+              <div
+                style={{
+                  backgroundColor: themeColors.staff_bg_color,
+                  borderColor: `${themeColors.staff_border_color}33`,
+                  borderLeftColor: themeColors.staff_border_color,
+                }}
+                className="rounded-r-lg rounded-l-none p-3 shadow-sm border border-l-4"
+              >
+                <p style={{ color: themeColors.staff_border_color }} className="text-xs font-bold">
+                  HoD / Faculty • <span className="text-slate-600 font-normal">Department</span>
+                </p>
+                <p className="text-xs text-slate-800 mt-1">Preview: Department lecture & lab schedule update.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* TAB 5: GLOBAL MESSAGE AUDIT FEED */}
+      {activeTab === 'feed' && (
+        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-5">
+          <h3 className="font-bold text-slate-800 mb-3 flex items-center gap-2 text-sm">
+            <MessageSquare size={18} className="text-[#800000]" /> Live University Communication Feed
+          </h3>
           <div className="space-y-3">
-            {requests.map((r) => (
-              <div key={r.id} className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 bg-slate-50 rounded-xl border border-slate-200">
+            {recentMessages.map((m) => (
+              <div key={m.id} className="p-3 rounded-xl bg-slate-50 border border-slate-100 flex items-start justify-between gap-3">
                 <div>
-                  <p className="font-bold text-sm text-slate-800">
-                    {r.full_name}{' '}
-                    <span className="text-xs font-normal text-[#800000]">
-                      ({r.requested_role} • {r.department})
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-xs font-bold text-[#800000]">{m.groups?.name}</span>
+                    <span className="text-xs text-slate-500">
+                      • {m.profiles?.full_name} ({m.profiles?.designation})
                     </span>
-                  </p>
-                  <p className="text-xs text-slate-500">{r.email} | {r.phone}</p>
+                  </div>
+                  <p className="text-sm text-slate-800 mt-1">{m.content || `[Media: ${m.file_name}]`}</p>
                 </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => prefillFromRequest(r)}
-                    className="bg-amber-500 hover:bg-amber-600 text-slate-950 text-xs px-3 py-1.5 rounded-lg font-bold"
-                  >
-                    Fill Form
-                  </button>
-                  <button
-                    onClick={() => updateRequestStatus(r.id, 'approved')}
-                    className="flex items-center gap-1 bg-emerald-600 hover:bg-emerald-700 text-white text-xs px-3 py-1.5 rounded-lg font-medium"
-                  >
-                    <Check size={14} /> Done
-                  </button>
-                  <button
-                    onClick={() => updateRequestStatus(r.id, 'rejected')}
-                    className="flex items-center gap-1 bg-slate-200 hover:bg-red-100 hover:text-red-700 text-slate-700 text-xs px-3 py-1.5 rounded-lg font-medium"
-                  >
-                    <X size={14} />
-                  </button>
-                </div>
+                <button
+                  onClick={() => deleteMessage(m.id)}
+                  title="Delete message"
+                  className="text-slate-400 hover:text-red-600 p-1.5 rounded-lg hover:bg-red-50 transition shrink-0"
+                >
+                  <Trash2 size={16} />
+                </button>
               </div>
             ))}
           </div>
-        )}
-      </div>
-
-      {/* 6. Global Message Audit Feed */}
-      <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-5">
-        <h3 className="font-bold text-slate-800 mb-3 flex items-center gap-2 text-sm">
-          <MessageSquare size={18} className="text-[#800000]" /> Live University Communication Feed
-        </h3>
-        <div className="space-y-3">
-          {recentMessages.map((m) => (
-            <div key={m.id} className="p-3 rounded-xl bg-slate-50 border border-slate-100 flex items-start justify-between gap-3">
-              <div>
-                <div className="flex items-center gap-2 flex-wrap">
-                  <span className="text-xs font-bold text-[#800000]">{m.groups?.name}</span>
-                  <span className="text-xs text-slate-500">
-                    • {m.profiles?.full_name} ({m.profiles?.designation})
-                  </span>
-                </div>
-                <p className="text-sm text-slate-800 mt-1">{m.content || `[Media: ${m.file_name}]`}</p>
-              </div>
-              <button
-                onClick={() => deleteMessage(m.id)}
-                title="Delete message"
-                className="text-slate-400 hover:text-red-600 p-1.5 rounded-lg hover:bg-red-50 transition shrink-0"
-              >
-                <Trash2 size={16} />
-              </button>
-            </div>
-          ))}
         </div>
-      </div>
+      )}
     </div>
   );
 }

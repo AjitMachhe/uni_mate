@@ -3,7 +3,8 @@ import { createClient } from '@supabase/supabase-js';
 import { supabase } from '../supabaseClient';
 import {
   Shield, Check, X, Trash2, MessageSquare, Users, UserPlus,
-  FolderKanban, Pencil, Search, GraduationCap, Palette, RotateCcw, KeyRound
+  FolderKanban, Pencil, Search, GraduationCap, Palette, RotateCcw,
+  KeyRound, FileSpreadsheet, Download, Upload
 } from 'lucide-react';
 
 const tempAuthClient = createClient(
@@ -13,13 +14,17 @@ const tempAuthClient = createClient(
 );
 
 export default function AdminDashboard({ onGroupsChanged }) {
-  const [activeTab, setActiveTab] = useState('groups'); // 'groups' | 'directory' | 'create' | 'appearance' | 'feed'
+  const [activeTab, setActiveTab] = useState('groups');
   const [requests, setRequests] = useState([]);
   const [allGroups, setAllGroups] = useState([]);
   const [allProfiles, setAllProfiles] = useState([]);
   const [recentMessages, setRecentMessages] = useState([]);
   const [creating, setCreating] = useState(false);
   const [statusMsg, setStatusMsg] = useState('');
+
+  // Bulk CSV Import state
+  const [csvLogs, setCsvLogs] = useState([]);
+  const [importingCsv, setImportingCsv] = useState(false);
 
   // Admin Reset Password Modal state
   const [resetTargetUser, setResetTargetUser] = useState(null);
@@ -36,15 +41,15 @@ export default function AdminDashboard({ onGroupsChanged }) {
   });
   const [savingColors, setSavingColors] = useState(false);
   const [colorSavedToast, setColorSavedToast] = useState('');
-  const [feedSearch, setFeedSearch] = useState('');
 
   // Group rename state
   const [editingGroupId, setEditingGroupId] = useState(null);
   const [editedGroupName, setEditedGroupName] = useState('');
 
-  // Directory filter state
+  // Directory & Feed filter states
   const [userFilter, setUserFilter] = useState('all');
   const [userSearch, setUserSearch] = useState('');
+  const [feedSearch, setFeedSearch] = useState('');
 
   const [newUser, setNewUser] = useState({
     full_name: '',
@@ -77,7 +82,6 @@ export default function AdminDashboard({ onGroupsChanged }) {
       .order('created_at', { ascending: false });
     if (reqs) setRequests(reqs);
 
-    // Fetch all groups and filter out 1-on-1 DMs safely in JS (handles NULL descriptions properly)
     const { data: grps } = await supabase
       .from('groups')
       .select('*, group_members(count)')
@@ -98,6 +102,139 @@ export default function AdminDashboard({ onGroupsChanged }) {
       .order('created_at', { ascending: false })
       .limit(100);
     if (msgs) setRecentMessages(msgs);
+  }
+
+  // Download sample CSV template for Excel
+  function handleDownloadCsvTemplate() {
+    const sampleCsv = [
+      'full_name,username,password,role,designation,department,group_name',
+      'Rohan Patil,rohan_cse,rohan123,student,TY BTech Student,CSE,CSE TY Notices',
+      'Suresh Patil,suresh_parent,suresh123,parent,Parent (TY CSE),CSE,CSE TY Notices',
+      'Dr. Priya Kulkarni,priya_hod,priya123,staff,HoD Food Tech,Food Tech,Food Tech.',
+    ].join('\n');
+
+    const blob = new Blob([sampleCsv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', 'uni_mate_bulk_users_template.csv');
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  }
+
+  // Parse and batch-import CSV rows
+  async function handleCsvFileUpload(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setImportingCsv(true);
+    setCsvLogs(['Reading CSV file...']);
+
+    const text = await file.text();
+    const lines = text
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter(Boolean);
+
+    if (lines.length < 2) {
+      setCsvLogs(['Error: CSV must contain a header row and at least one user row.']);
+      setImportingCsv(false);
+      e.target.value = '';
+      return;
+    }
+
+    const headers = lines[0].split(',').map((h) => h.trim().toLowerCase());
+    const idx = {
+      full_name: headers.indexOf('full_name'),
+      username: headers.indexOf('username'),
+      password: headers.indexOf('password'),
+      role: headers.indexOf('role'),
+      designation: headers.indexOf('designation'),
+      department: headers.indexOf('department'),
+      group_name: headers.indexOf('group_name'),
+    };
+
+    if (idx.full_name === -1 || idx.username === -1 || idx.password === -1) {
+      setCsvLogs(['Error: Missing required columns (full_name, username, password). Download the sample template first.']);
+      setImportingCsv(false);
+      e.target.value = '';
+      return;
+    }
+
+    const logs = [];
+    let successCount = 0;
+
+    for (let i = 1; i < lines.length; i++) {
+      const cols = lines[i].split(',').map((c) => c.trim());
+      const fullName = cols[idx.full_name] || '';
+      const rawUsername = (cols[idx.username] || '').toLowerCase().replace(/\s+/g, '');
+      const password = cols[idx.password] || '';
+      const rawRole = (cols[idx.role] || 'student').toLowerCase();
+      const role = ['admin', 'staff', 'student', 'parent'].includes(rawRole) ? rawRole : 'student';
+      const designation = cols[idx.designation] || role;
+      const department = cols[idx.department] || '';
+      const groupName = idx.group_name !== -1 ? cols[idx.group_name] || '' : '';
+
+      if (!fullName || !rawUsername || password.length < 6) {
+        logs.push(`Row ${i + 1} skipped (${fullName || 'Blank'}): Missing name/username or password < 6 chars.`);
+        continue;
+      }
+
+      const authEmail = rawUsername.includes('@') ? rawUsername : `${rawUsername}@gmail.com`;
+
+      const { data: authData, error: authErr } = await tempAuthClient.auth.signUp({
+        email: authEmail,
+        password,
+      });
+
+      if (authErr || !authData?.user) {
+        logs.push(`Row ${i + 1} failed (${rawUsername}): ${authErr?.message || 'Auth creation failed'}`);
+        continue;
+      }
+
+      const { error: profErr } = await supabase.from('profiles').insert([
+        {
+          id: authData.user.id,
+          full_name: fullName,
+          email: authEmail,
+          role,
+          designation,
+          department,
+        },
+      ]);
+
+      if (profErr) {
+        logs.push(`Row ${i + 1} profile error (${rawUsername}): ${profErr.message}`);
+        continue;
+      }
+
+      // Auto-assign to matching group if group_name column is provided
+      let groupNote = '';
+      if (groupName) {
+        const matchedGroup = allGroups.find(
+          (g) => g.name.trim().toLowerCase() === groupName.trim().toLowerCase()
+        );
+        if (matchedGroup) {
+          const { error: memErr } = await supabase
+            .from('group_members')
+            .insert([{ group_id: matchedGroup.id, user_id: authData.user.id }]);
+          groupNote = memErr ? ` (group assign failed: ${memErr.message})` : ` → Added to "${matchedGroup.name}"`;
+        } else {
+          groupNote = ` (Group "${groupName}" not found)`;
+        }
+      }
+
+      successCount++;
+      logs.push(`Row ${i + 1} OK: ${fullName} (${rawUsername})${groupNote}`);
+    }
+
+    logs.unshift(`Completed: ${successCount} of ${lines.length - 1} accounts created.`);
+    setCsvLogs(logs);
+    setImportingCsv(false);
+    e.target.value = '';
+    loadAdminData();
+    if (onGroupsChanged) onGroupsChanged();
   }
 
   async function handleAdminResetPassword(e) {
@@ -265,7 +402,7 @@ export default function AdminDashboard({ onGroupsChanged }) {
   }
 
   async function deleteMessage(id) {
-    if (!window.confirm('Delete this message permanently?')) return;
+    if (!window.confirm('Permanently erase this message from database?')) return;
     await supabase.from('messages').delete().eq('id', id);
     loadAdminData();
   }
@@ -287,7 +424,7 @@ export default function AdminDashboard({ onGroupsChanged }) {
   const tabs = [
     { id: 'groups', label: `Groups (${allGroups.length})`, icon: FolderKanban },
     { id: 'directory', label: `Members & Passwords (${allProfiles.length})`, icon: GraduationCap },
-    { id: 'create', label: `Create & Requests${requests.length ? ` (${requests.length})` : ''}`, icon: UserPlus },
+    { id: 'create', label: `Create & Bulk CSV${requests.length ? ` (${requests.length})` : ''}`, icon: UserPlus },
     { id: 'appearance', label: 'Bubble Studio', icon: Palette },
     { id: 'feed', label: 'Audit Feed', icon: MessageSquare },
   ];
@@ -364,7 +501,7 @@ export default function AdminDashboard({ onGroupsChanged }) {
           <h2 className="text-xl font-bold flex items-center gap-2">
             <Shield size={22} className="text-amber-400" /> Super Admin Control Center
           </h2>
-          <p className="text-xs text-red-100 mt-1">Manage groups, members, passwords, colors, and communication logs</p>
+          <p className="text-xs text-red-100 mt-1">Manage groups, members, bulk CSV onboarding, colors, and audit logs</p>
         </div>
         <div className="flex items-center gap-5 text-right">
           <div>
@@ -619,12 +756,59 @@ export default function AdminDashboard({ onGroupsChanged }) {
         </div>
       )}
 
-      {/* TAB 3: CREATE USER & PENDING ACCESS REQUESTS */}
+      {/* TAB 3: BULK CSV UPLOAD, CREATE SINGLE USER & ACCESS REQUESTS */}
       {activeTab === 'create' && (
         <div className="space-y-5">
+          {/* Bulk CSV Onboarding Card */}
+          <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-5 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h3 className="font-bold text-slate-800 flex items-center gap-2 text-sm">
+                  <FileSpreadsheet size={18} className="text-emerald-700" /> Bulk CSV Student / Parent / Staff Import
+                </h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Upload a CSV file to generate logins in bulk and auto-assign users to their department group
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleDownloadCsvTemplate}
+                  className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-700 text-xs font-semibold transition"
+                >
+                  <Download size={14} /> Sample CSV
+                </button>
+
+                <label className="cursor-pointer flex items-center gap-1.5 px-4 py-2 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold shadow-sm transition">
+                  <Upload size={14} />
+                  <span>{importingCsv ? 'Importing...' : 'Upload CSV'}</span>
+                  <input
+                    type="file"
+                    accept=".csv,text/csv"
+                    disabled={importingCsv}
+                    onChange={handleCsvFileUpload}
+                    className="hidden"
+                  />
+                </label>
+              </div>
+            </div>
+
+            {csvLogs.length > 0 && (
+              <div className="p-3 rounded-xl bg-slate-900 text-slate-100 text-[11px] font-mono max-h-40 overflow-y-auto space-y-1">
+                {csvLogs.map((line, i) => (
+                  <p key={i} className={line.includes('OK') || line.includes('Completed') ? 'text-emerald-400' : 'text-amber-300'}>
+                    {line}
+                  </p>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Single User Creation Form */}
           <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-5">
             <h3 className="font-bold text-slate-800 mb-3 flex items-center gap-2 text-sm">
-              <UserPlus size={18} className="text-[#800000]" /> Create Member Login Credentials
+              <UserPlus size={18} className="text-[#800000]" /> Create Single Member Account
             </h3>
 
             {statusMsg && (
@@ -692,6 +876,7 @@ export default function AdminDashboard({ onGroupsChanged }) {
             </form>
           </div>
 
+          {/* Pending Access Requests */}
           <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-5">
             <h3 className="font-bold text-slate-800 mb-3 flex items-center gap-2 text-sm">
               <Users size={18} className="text-[#800000]" /> Pending Access Requests ({requests.length})
@@ -783,7 +968,6 @@ export default function AdminDashboard({ onGroupsChanged }) {
           )}
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {/* Super Admin Bubble Controls */}
             <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
               <p className="text-xs font-bold text-slate-700 uppercase tracking-wider">Super Admin Message Bubble</p>
               <div className="flex items-center gap-4">
@@ -821,7 +1005,6 @@ export default function AdminDashboard({ onGroupsChanged }) {
               </div>
             </div>
 
-            {/* Faculty / Staff Bubble Controls */}
             <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
               <p className="text-xs font-bold text-slate-700 uppercase tracking-wider">Faculty / Staff Message Bubble</p>
               <div className="flex items-center gap-4">
@@ -863,7 +1046,6 @@ export default function AdminDashboard({ onGroupsChanged }) {
       )}
 
       {/* TAB 5: GLOBAL MESSAGE AUDIT FEED */}
-    {/* TAB 5: GLOBAL MESSAGE AUDIT FEED (Includes Staff-Deleted Messages + Search) */}
       {activeTab === 'feed' && (
         <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-5">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">

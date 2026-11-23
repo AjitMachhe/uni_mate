@@ -29,6 +29,8 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
   const [members, setMembers] = useState([]);
   const [allUsers, setAllUsers] = useState([]);
   const [searchTerm, setSearchTerm] = useState('');
+  const [chatSearchQuery, setChatSearchQuery] = useState('');
+  const [showChatSearch, setShowChatSearch] = useState(false);
   const [text, setText] = useState('');
   const [file, setFile] = useState(null);
   const [showMembers, setShowMembers] = useState(false);
@@ -54,7 +56,7 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
   };
 
   useEffect(() => {
-    scrollToBottom();
+    if (!chatSearchQuery) scrollToBottom();
   }, [messages.length]);
 
   useEffect(() => {
@@ -79,6 +81,8 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
     setIsRenaming(false);
     setShowMembers(false);
     setExpandedReadsMsgId(null);
+    setChatSearchQuery('');
+    setShowChatSearch(false);
     fetchMessages();
     fetchMembers();
     if (canManage && !isDirectChat) {
@@ -116,6 +120,7 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
       .from('messages')
       .select('*, profiles(full_name, designation, role, bubble_bg_color, bubble_border_color)')
       .eq('group_id', group.id)
+      .eq('deleted_by_staff', false)
       .order('created_at', { ascending: true });
 
     if (data) {
@@ -188,6 +193,26 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
     fetchMessages();
   }
 
+  // Soft-delete for Staff (keeps copy for Admin audit); hard-delete if Admin clicks permanent delete
+  async function handleDeleteMessage(msg) {
+    if (!canManage) return;
+    const promptText = isAdmin
+      ? 'Remove this message from the chat? (Or permanently delete from Admin Audit Feed)'
+      : 'Remove this message from the chat?';
+    if (!window.confirm(promptText)) return;
+
+    await supabase
+      .from('messages')
+      .update({
+        deleted_by_staff: true,
+        is_pinned: false,
+        deleted_at: new Date().toISOString(),
+      })
+      .eq('id', msg.id);
+
+    fetchMessages();
+  }
+
   async function handleRenameGroup() {
     const trimmed = editedName.trim();
     if (!trimmed || trimmed === group.name) {
@@ -256,6 +281,19 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
     : [];
 
   const pinnedMessages = messages.filter((m) => m.is_pinned);
+
+  // Filter messages when Staff or Admin uses the Chat Search bar
+  const displayedMessages =
+    canManage && chatSearchQuery.trim()
+      ? messages.filter((m) => {
+          const q = chatSearchQuery.toLowerCase();
+          return (
+            (m.content || '').toLowerCase().includes(q) ||
+            (m.file_name || '').toLowerCase().includes(q) ||
+            (m.profiles?.full_name || '').toLowerCase().includes(q)
+          );
+        })
+      : messages;
 
   async function handleSend(e) {
     e.preventDefault();
@@ -346,6 +384,22 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
         </div>
 
         <div className="flex items-center gap-2 shrink-0">
+          {/* Search Chat Button (Staff & Admin only) */}
+          {canManage && (
+            <button
+              onClick={() => {
+                setShowChatSearch(!showChatSearch);
+                if (showChatSearch) setChatSearchQuery('');
+              }}
+              title="Search messages in this chat"
+              className={`p-2 rounded-full transition ${
+                showChatSearch ? 'bg-amber-400 text-slate-950' : 'bg-white/15 hover:bg-white/25 text-white'
+              }`}
+            >
+              <Search size={15} />
+            </button>
+          )}
+
           {!isDirectChat && (
             <button
               onClick={() => setShowMembers(!showMembers)}
@@ -368,8 +422,37 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
         </div>
       </div>
 
+      {/* Collapsible Chat Search Bar (Staff & Admin only) */}
+      {canManage && showChatSearch && (
+        <div className="bg-white border-b border-slate-200 px-4 py-2.5 flex items-center gap-2 shadow-sm">
+          <Search size={15} className="text-slate-400 shrink-0" />
+          <input
+            type="text"
+            autoFocus
+            value={chatSearchQuery}
+            onChange={(e) => setChatSearchQuery(e.target.value)}
+            placeholder="Search messages, file names, or sender..."
+            className="flex-1 text-xs bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 focus:outline-none focus:border-slate-500"
+          />
+          {chatSearchQuery && (
+            <span className="text-[11px] text-slate-500 font-medium shrink-0">
+              {displayedMessages.length} found
+            </span>
+          )}
+          <button
+            onClick={() => {
+              setChatSearchQuery('');
+              setShowChatSearch(false);
+            }}
+            className="text-slate-400 hover:text-slate-700 p-1"
+          >
+            <X size={15} />
+          </button>
+        </div>
+      )}
+
       {/* Pinned Notice Banner */}
-      {pinnedMessages.length > 0 && (
+      {pinnedMessages.length > 0 && !chatSearchQuery && (
         <div className="bg-amber-50 border-b border-amber-200 px-4 py-2 flex items-center justify-between gap-3">
           <div className="flex items-center gap-2 text-xs text-amber-950 truncate">
             <Pin size={14} className="text-amber-600 shrink-0 rotate-45" />
@@ -472,14 +555,17 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
         </div>
       )}
 
-      {/* Messages Feed (Custom Fill & Border Colors per User/Role) */}
+      {/* Messages Feed */}
       <div ref={messagesContainerRef} className="flex-1 overflow-y-auto p-4 space-y-4">
-        {messages.map((msg) => {
+        {displayedMessages.length === 0 && chatSearchQuery && (
+          <p className="text-center text-xs text-slate-400 py-8">No messages match "{chatSearchQuery}".</p>
+        )}
+
+        {displayedMessages.map((msg) => {
           const isMsgAdmin = msg.profiles?.role === 'admin';
           const readers = readsByMessage[msg.id] || [];
           const isReadersExpanded = expandedReadsMsgId === msg.id;
 
-          // Priority: 1. Pinned amber highlight -> 2. Individual user custom color -> 3. Global Admin/Staff color
           const fillHex = msg.is_pinned
             ? '#fffbeb'
             : msg.profiles?.bubble_bg_color ||
@@ -505,7 +591,7 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
                   {msg.profiles?.full_name} •{' '}
                   <span className="text-slate-600 font-normal">{msg.profiles?.designation}</span>
                 </span>
-                <div className="flex items-center gap-2 shrink-0">
+                <div className="flex items-center gap-1.5 shrink-0">
                   {msg.is_pinned && (
                     <span className="text-[10px] bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full font-bold flex items-center gap-1">
                       <Pin size={10} /> Pinned
@@ -523,6 +609,16 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
                       }`}
                     >
                       <Pin size={13} />
+                    </button>
+                  )}
+                  {/* Staff can delete their own message (or Staff can delete in group); Admin retains copy in Audit Feed */}
+                  {canManage && (isAdmin || msg.sender_id === currentUser.id || currentUser.role === 'staff') && (
+                    <button
+                      onClick={() => handleDeleteMessage(msg)}
+                      title="Delete message from chat"
+                      className="p-1 text-slate-400 hover:text-red-600 rounded transition"
+                    >
+                      <Trash2 size={13} />
                     </button>
                   )}
                 </div>

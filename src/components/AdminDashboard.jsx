@@ -36,6 +36,7 @@ export default function AdminDashboard({ onGroupsChanged }) {
   });
   const [savingColors, setSavingColors] = useState(false);
   const [colorSavedToast, setColorSavedToast] = useState('');
+  const [feedSearch, setFeedSearch] = useState('');
 
   // Group rename state
   const [editingGroupId, setEditingGroupId] = useState(null);
@@ -95,7 +96,7 @@ export default function AdminDashboard({ onGroupsChanged }) {
       .from('messages')
       .select('*, profiles(full_name, designation), groups(name)')
       .order('created_at', { ascending: false })
-      .limit(25);
+      .limit(100);
     if (msgs) setRecentMessages(msgs);
   }
 
@@ -862,32 +863,78 @@ export default function AdminDashboard({ onGroupsChanged }) {
       )}
 
       {/* TAB 5: GLOBAL MESSAGE AUDIT FEED */}
+    {/* TAB 5: GLOBAL MESSAGE AUDIT FEED (Includes Staff-Deleted Messages + Search) */}
       {activeTab === 'feed' && (
         <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-5">
-          <h3 className="font-bold text-slate-800 mb-3 flex items-center gap-2 text-sm">
-            <MessageSquare size={18} className="text-[#800000]" /> Live University Communication Feed
-          </h3>
-          <div className="space-y-3">
-            {recentMessages.map((m) => (
-              <div key={m.id} className="p-3 rounded-xl bg-slate-50 border border-slate-100 flex items-start justify-between gap-3">
-                <div>
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-xs font-bold text-[#800000]">{m.groups?.name}</span>
-                    <span className="text-xs text-slate-500">
-                      • {m.profiles?.full_name} ({m.profiles?.designation})
-                    </span>
-                  </div>
-                  <p className="text-sm text-slate-800 mt-1">{m.content || `[Media: ${m.file_name}]`}</p>
-                </div>
-                <button
-                  onClick={() => deleteMessage(m.id)}
-                  title="Delete message"
-                  className="text-slate-400 hover:text-red-600 p-1.5 rounded-lg hover:bg-red-50 transition shrink-0"
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+            <div>
+              <h3 className="font-bold text-slate-800 flex items-center gap-2 text-sm">
+                <MessageSquare size={18} className="text-[#800000]" /> Live University Communication Audit Feed
+              </h3>
+              <p className="text-[11px] text-slate-500">
+                Messages deleted by Staff remain preserved here for Super Admin oversight
+              </p>
+            </div>
+
+            <div className="relative">
+              <Search size={13} className="absolute left-2.5 top-2 text-slate-400" />
+              <input
+                type="text"
+                value={feedSearch}
+                onChange={(e) => setFeedSearch(e.target.value)}
+                placeholder="Search all chats, senders, files..."
+                className="pl-7 pr-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:outline-none focus:border-[#800000] w-64"
+              />
+            </div>
+          </div>
+
+          <div className="space-y-3 max-h-[30rem] overflow-y-auto">
+            {recentMessages
+              .filter((m) => {
+                const q = feedSearch.toLowerCase();
+                if (!q) return true;
+                return (
+                  (m.content || '').toLowerCase().includes(q) ||
+                  (m.file_name || '').toLowerCase().includes(q) ||
+                  (m.profiles?.full_name || '').toLowerCase().includes(q) ||
+                  (m.groups?.name || '').toLowerCase().includes(q)
+                );
+              })
+              .map((m) => (
+                <div
+                  key={m.id}
+                  className={`p-3 rounded-xl border flex items-start justify-between gap-3 ${
+                    m.deleted_by_staff
+                      ? 'bg-red-50/60 border-red-200'
+                      : 'bg-slate-50 border-slate-100'
+                  }`}
                 >
-                  <Trash2 size={16} />
-                </button>
-              </div>
-            ))}
+                  <div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-xs font-bold text-[#800000]">{m.groups?.name}</span>
+                      <span className="text-xs text-slate-500">
+                        • {m.profiles?.full_name} ({m.profiles?.designation})
+                      </span>
+                      <span className="text-[10px] text-slate-400">
+                        {new Date(m.created_at).toLocaleString()}
+                      </span>
+                      {m.deleted_by_staff && (
+                        <span className="text-[10px] bg-red-600 text-white px-2 py-0.5 rounded-full font-bold">
+                          Deleted by Staff
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-sm text-slate-800 mt-1">{m.content || `[Media: ${m.file_name}]`}</p>
+                  </div>
+                  <button
+                    onClick={() => deleteMessage(m.id)}
+                    title="Permanently erase from database"
+                    className="text-slate-400 hover:text-red-600 p-1.5 rounded-lg hover:bg-red-50 transition shrink-0"
+                  >
+                    <Trash2 size={16} />
+                  </button>
+                </div>
+              ))}
           </div>
         </div>
       )}

@@ -3,9 +3,10 @@ import { supabase } from './supabaseClient';
 import AuthScreen from './components/AuthScreen';
 import ChatRoom from './components/ChatRoom';
 import AdminDashboard from './components/AdminDashboard';
+
 import {
   LogOut, Plus, Shield, MessageCircle, Menu, X,
-  GraduationCap, Bell, Lock, KeyRound, UserCheck, Trash2 , Smartphone
+  GraduationCap, Bell, BellRing, Lock, KeyRound, UserCheck, Trash2, Smartphone
 } from 'lucide-react';
 
 const ROLE_THEMES = {
@@ -43,6 +44,102 @@ const ROLE_THEMES = {
   },
 };
 
+const [notifPermission, setNotifPermission] = useState(
+  typeof Notification !== 'undefined' ? Notification.permission : 'default'
+);
+
+async function triggerSystemNotification(title, bodyText) {
+  if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+
+  try {
+    if ('serviceWorker' in navigator) {
+      const reg = await navigator.serviceWorker.ready;
+      if (reg && reg.showNotification) {
+        await reg.showNotification(title, {
+          body: bodyText,
+          icon: '/app-icon.svg',
+          badge: '/app-icon.svg',
+          vibrate: [200, 100, 200],
+          tag: 'uni-mate-alert',
+        });
+        return;
+      }
+    }
+    new Notification(title, { body: bodyText, icon: '/app-icon.svg' });
+  } catch {
+    // Fallback handled by in-app toast banner
+  }
+}
+
+async function handleEnableNotifications() {
+  if (typeof Notification === 'undefined') {
+    alert('This browser does not support push notifications.');
+    return;
+  }
+  const result = await Notification.requestPermission();
+  setNotifPermission(result);
+  if (result === 'granted') {
+    playNotificationChime();
+    await triggerSystemNotification(
+      'uni_mate Alerts Active',
+      'You will now receive live university circulars & messages.'
+    );
+  } else {
+    alert('Notifications are blocked in your browser settings. Please allow notifications for uni-mate-green.vercel.app.');
+  }
+}
+
+useEffect(() => {
+  if (!profile) return;
+
+  const globalChannel = supabase
+    .channel(`global-uni-messages-${profile.id}`)
+    .on(
+      'postgres_changes',
+      { event: 'INSERT', schema: 'public', table: 'messages' },
+      (payload) => {
+        const newMsg = payload.new;
+        if (newMsg.sender_id === profile.id) return;
+
+        playNotificationChime();
+
+        const isViewingSameGroup = activeGroupRef.current?.id === newMsg.group_id;
+        if (!isViewingSameGroup) {
+          setUnreadCounts((prev) => ({
+            ...prev,
+            [newMsg.group_id]: (prev[newMsg.group_id] || 0) + 1,
+          }));
+        }
+
+        const previewText = newMsg.content || `New attachment: ${newMsg.file_name || 'Media'}`;
+        setToastAlert(previewText);
+        setTimeout(() => setToastAlert(null), 5000);
+
+        if (!isViewingSameGroup || document.hidden) {
+          triggerSystemNotification('uni_mate • New Message', previewText);
+        }
+      }
+    )
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'group_members', filter: `user_id=eq.${profile.id}` },
+      () => loadGroups()
+    )
+    .on(
+      'postgres_changes',
+      { event: 'DELETE', schema: 'public', table: 'groups' },
+      (payload) => {
+        if (activeGroupRef.current?.id === payload.old.id) {
+          setActiveGroup(null);
+        }
+        loadGroups();
+      }
+    )
+    .subscribe();
+
+  return () => supabase.removeChannel(globalChannel);
+}, [profile]);
+
 export default function App() {
   const [session, setSession] = useState(null);
   const [profile, setProfile] = useState(null);
@@ -68,6 +165,16 @@ export default function App() {
   const activeGroupRef = useRef(null);
   const [deferredPrompt, setDeferredPrompt] = useState(null);
   const [showIosInstallHelp, setShowIosInstallHelp] = useState(false);
+
+  <button
+  onClick={handleEnableNotifications}
+  title={notifPermission === 'granted' ? 'Notifications Enabled (Click to Test)' : 'Enable Desktop & Mobile Alerts'}
+  className={`p-2 rounded-lg hover:bg-white transition ${
+    notifPermission === 'granted' ? 'text-emerald-600' : 'text-amber-600 animate-pulse'
+  }`}
+>
+  <BellRing size={17} />
+</button>
 
   useEffect(() => {
     const handleBeforeInstallPrompt = (e) => {

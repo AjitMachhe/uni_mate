@@ -73,10 +73,16 @@ export default function App() {
   const [unreadCounts, setUnreadCounts] = useState({});
   const [toastAlert, setToastAlert] = useState(null);
   const activeGroupRef = useRef(null);
+  const groupsRef = useRef([]);
+  const lastCheckedMsgTimeRef = useRef(new Date().toISOString());
 
   useEffect(() => {
     activeGroupRef.current = activeGroup;
   }, [activeGroup]);
+
+  useEffect(() => {
+    groupsRef.current = groups;
+  }, [groups]);
 
   useEffect(() => {
     const handleBeforeInstallPrompt = (e) => {
@@ -158,6 +164,7 @@ export default function App() {
     }
   }
 
+  // Real-time WebSocket listener (includes auto-sync for newly created 1-on-1 DMs)
   useEffect(() => {
     if (!profile) return;
 
@@ -169,6 +176,10 @@ export default function App() {
         (payload) => {
           const newMsg = payload.new;
           if (newMsg.sender_id === profile.id) return;
+
+          if (!groupsRef.current.some((g) => g.id === newMsg.group_id)) {
+            loadGroups();
+          }
 
           playNotificationChime();
 
@@ -207,6 +218,60 @@ export default function App() {
       .subscribe();
 
     return () => supabase.removeChannel(globalChannel);
+  }, [profile]);
+
+  // Fallback polling + wake-up check so mobile devices catch group & 1-on-1 messages if WebSocket sleeps
+  useEffect(() => {
+    if (!profile) return;
+
+    const checkMissedMessages = async () => {
+      const { data: newMsgs } = await supabase
+        .from('messages')
+        .select('id, group_id, sender_id, content, file_name, created_at')
+        .gt('created_at', lastCheckedMsgTimeRef.current)
+        .neq('sender_id', profile.id)
+        .eq('deleted_by_staff', false)
+        .order('created_at', { ascending: true });
+
+      if (newMsgs && newMsgs.length > 0) {
+        lastCheckedMsgTimeRef.current = newMsgs[newMsgs.length - 1].created_at;
+        const latest = newMsgs[newMsgs.length - 1];
+
+        const hasUnknownGroup = newMsgs.some(
+          (m) => !groupsRef.current.some((g) => g.id === m.group_id)
+        );
+        if (hasUnknownGroup) {
+          await loadGroups();
+        }
+
+        playNotificationChime();
+
+        newMsgs.forEach((m) => {
+          if (activeGroupRef.current?.id !== m.group_id) {
+            setUnreadCounts((prev) => ({
+              ...prev,
+              [m.group_id]: (prev[m.group_id] || 0) + 1,
+            }));
+          }
+        });
+
+        const previewText = latest.content || `New attachment: ${latest.file_name || 'Media'}`;
+        setToastAlert(previewText);
+        setTimeout(() => setToastAlert(null), 5000);
+        triggerSystemNotification('uni_mate • New Message', previewText);
+      }
+    };
+
+    const intervalId = setInterval(checkMissedMessages, 8000);
+    const onVisible = () => {
+      if (!document.hidden) checkMissedMessages();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+
+    return () => {
+      clearInterval(intervalId);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
   }, [profile]);
 
   function playNotificationChime() {

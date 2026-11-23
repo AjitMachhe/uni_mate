@@ -250,6 +250,47 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
     fetchMessages();
   }
 
+  // Export full Seen / Not Seen attendance report for any circular to CSV
+  function handleExportReadsCsv(msg) {
+    const readers = readsByMessage[msg.id] || [];
+    const readMap = new Map(readers.map((r) => [r.user_id, r.read_at]));
+
+    const csvRows = [
+      ['Group Name', 'Full Name', 'Role', 'Designation', 'Department', 'Status', 'Seen At'].join(','),
+    ];
+
+    members.forEach((m) => {
+      if (m.id === msg.sender_id) return; // Exclude the sender themselves
+      const seenTime = readMap.get(m.id);
+      const status = seenTime ? 'Seen' : 'Not Seen Yet';
+      const formattedTime = seenTime ? new Date(seenTime).toLocaleString().replace(/,/g, '') : '-';
+
+      const escapeCsv = (val) => `"${String(val || '').replace(/"/g, '""')}"`;
+      csvRows.push(
+        [
+          escapeCsv(group.name),
+          escapeCsv(m.full_name),
+          escapeCsv(m.role),
+          escapeCsv(m.designation),
+          escapeCsv(m.department),
+          escapeCsv(status),
+          escapeCsv(formattedTime),
+        ].join(',')
+      );
+    });
+
+    const blob = new Blob([csvRows.join('\n')], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    const safeGroup = group.name.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+    link.setAttribute('download', `seen_report_${safeGroup}_${new Date(msg.created_at).toISOString().slice(0, 10)}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  }
+
+
   async function handleRenameGroup() {
     const trimmed = editedName.trim();
     if (!trimmed || trimmed === group.name) {
@@ -861,19 +902,32 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
                 </div>
               )}
 
-              {/* Seen By Read Receipts */}
+            {/* Seen By Read Receipts + Export CSV Report */}
               {canManage && (
                 <div className="mt-2.5 pt-2 border-t border-black/5">
-                  <button
-                    type="button"
-                    onClick={() => setExpandedReadsMsgId(isReadersExpanded ? null : msg.id)}
-                    className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-slate-600 hover:text-slate-900 transition"
-                  >
-                    <Eye size={13} className="text-emerald-600" />
-                    <span>
-                      Seen by {readers.length} {readers.length === 1 ? 'member' : 'members'}
-                    </span>
-                  </button>
+                  <div className="flex items-center justify-between gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setExpandedReadsMsgId(isReadersExpanded ? null : msg.id)}
+                      className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-slate-600 hover:text-slate-900 transition"
+                    >
+                      <Eye size={13} className="text-emerald-600" />
+                      <span>
+                        Seen by {readers.length} {readers.length === 1 ? 'member' : 'members'}
+                      </span>
+                    </button>
+
+                    {!isDirectChat && (
+                      <button
+                        type="button"
+                        onClick={() => handleExportReadsCsv(msg)}
+                        title="Download Seen / Not Seen Excel CSV report"
+                        className="inline-flex items-center gap-1 text-[10px] font-bold text-slate-600 hover:text-[#800000] bg-white/80 hover:bg-white px-2 py-0.5 rounded border border-slate-200 transition"
+                      >
+                        <Download size={11} /> Export CSV
+                      </button>
+                    )}
+                  </div>
 
                   {isReadersExpanded && (
                     <div className="mt-2 bg-white/90 rounded-lg p-2.5 border border-slate-200 space-y-1 max-h-36 overflow-y-auto">
@@ -951,7 +1005,7 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
           />
           <button
             type="submit"
-            disabled={uploading}
+            disabled={uploading}handleDeleteMessage
             className={`${roomTheme.btnBg} text-white p-2.5 rounded-full transition disabled:opacity-50`}
           >
             <Send size={18} />

@@ -5,7 +5,7 @@ import ChatRoom from './components/ChatRoom';
 import AdminDashboard from './components/AdminDashboard';
 import {
   LogOut, Plus, Shield, MessageCircle, Menu, X,
-  GraduationCap, Bell, Lock, KeyRound, UserCheck, Trash2
+  GraduationCap, Bell, Lock, KeyRound, UserCheck, Trash2 , Smartphone
 } from 'lucide-react';
 
 const ROLE_THEMES = {
@@ -66,6 +66,27 @@ export default function App() {
   const [unreadCounts, setUnreadCounts] = useState({});
   const [toastAlert, setToastAlert] = useState(null);
   const activeGroupRef = useRef(null);
+  const [deferredPrompt, setDeferredPrompt] = useState(null);
+  const [showIosInstallHelp, setShowIosInstallHelp] = useState(false);
+
+  useEffect(() => {
+    const handleBeforeInstallPrompt = (e) => {
+      e.preventDefault();
+      setDeferredPrompt(e);
+    };
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    return () => window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+  }, []);
+
+  async function handleInstallAppClick() {
+    if (deferredPrompt) {
+      deferredPrompt.prompt();
+      const { outcome } = await deferredPrompt.userChoice;
+      if (outcome === 'accepted') setDeferredPrompt(null);
+    } else {
+      setShowIosInstallHelp(true);
+    }
+  }
 
   useEffect(() => {
     activeGroupRef.current = activeGroup;
@@ -612,6 +633,30 @@ export default function App() {
               </div>
             </div>
           )}
+          {/* Install Mobile App Button (PWA) */}
+<div className="px-3 pt-2.5 pb-1">
+  <button
+    onClick={handleInstallAppClick}
+    className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-xl text-xs font-bold bg-amber-50 hover:bg-amber-100 text-amber-950 border border-amber-300 transition"
+  >
+    <Smartphone size={15} className="text-[#800000]" />
+    <span>Install uni_mate App</span>
+  </button>
+
+  {showIosInstallHelp && (
+    <div className="mt-2 p-2.5 bg-slate-900 text-white rounded-xl text-[11px] space-y-1 relative">
+      <button
+        onClick={() => setShowIosInstallHelp(false)}
+        className="absolute top-1.5 right-2 text-slate-400 hover:text-white"
+      >
+        ✕
+      </button>
+      <p className="font-bold text-amber-300">Install on Phone:</p>
+      <p>• <strong>Android Chrome:</strong> Tap <strong>⋮</strong> (top right) → <strong>Install app</strong></p>
+      <p>• <strong>iPhone Safari:</strong> Tap <strong>Share (↑)</strong> → <strong>Add to Home Screen</strong></p>
+    </div>
+  )}
+</div>
         </div>
       </aside>
 

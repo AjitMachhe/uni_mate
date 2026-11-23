@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from '../supabaseClient';
 import {
   Send, Paperclip, Download, Users, ShieldCheck, FileText,
-  UserPlus, Trash2, Search, Pencil, Check, X, Pin, Lock, Eye
+  UserPlus, Trash2, Search, Pencil, Check, X, Pin, Lock, Eye, UsersRound
 } from 'lucide-react';
 
 const ROOM_THEMES = {
@@ -28,7 +28,13 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
   const [expandedReadsMsgId, setExpandedReadsMsgId] = useState(null);
   const [members, setMembers] = useState([]);
   const [allUsers, setAllUsers] = useState([]);
+
+  // Member drawer filters & bulk add state
   const [searchTerm, setSearchTerm] = useState('');
+  const [deptFilter, setDeptFilter] = useState('all');
+  const [roleFilter, setRoleFilter] = useState('all');
+  const [bulkAdding, setBulkAdding] = useState(false);
+
   const [chatSearchQuery, setChatSearchQuery] = useState('');
   const [showChatSearch, setShowChatSearch] = useState(false);
   const [text, setText] = useState('');
@@ -83,6 +89,9 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
     setExpandedReadsMsgId(null);
     setChatSearchQuery('');
     setShowChatSearch(false);
+    setSearchTerm('');
+    setDeptFilter('all');
+    setRoleFilter('all');
     fetchMessages();
     fetchMembers();
     if (canManage && !isDirectChat) {
@@ -193,11 +202,10 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
     fetchMessages();
   }
 
-  // Soft-delete for Staff (keeps copy for Admin audit); hard-delete if Admin clicks permanent delete
   async function handleDeleteMessage(msg) {
     if (!canManage) return;
     const promptText = isAdmin
-      ? 'Remove this message from the chat? (Or permanently delete from Admin Audit Feed)'
+      ? 'Remove this message from the chat? (Preserved in Admin Audit Feed)'
       : 'Remove this message from the chat?';
     if (!window.confirm(promptText)) return;
 
@@ -252,6 +260,29 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
     if (!error) fetchMembers();
   }
 
+  // Bulk add all users currently matching the Department / Role / Search filter
+  async function handleBulkAddMatching() {
+    if (!canManage || isDirectChat || availableUsers.length === 0) return;
+    if (!window.confirm(`Add all ${availableUsers.length} matching users to "${group.name}"?`)) return;
+
+    setBulkAdding(true);
+    const rows = availableUsers.map((u) => ({
+      group_id: group.id,
+      user_id: u.id,
+    }));
+
+    const { error } = await supabase
+      .from('group_members')
+      .upsert(rows, { onConflict: 'group_id,user_id', ignoreDuplicates: true });
+
+    setBulkAdding(false);
+    if (error) {
+      alert(`Bulk add failed: ${error.message}`);
+    } else {
+      fetchMembers();
+    }
+  }
+
   async function handleRemoveMember(userId) {
     if (!canManage || isDirectChat) return;
     if (userId === currentUser.id) return;
@@ -267,22 +298,30 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
     ? members
     : members.filter((m) => m.role === 'staff' || m.role === 'admin');
 
+  // Unique list of departments for the bulk filter dropdown
+  const uniqueDepartments = Array.from(
+    new Set(allUsers.map((u) => (u.department || '').trim()).filter(Boolean))
+  ).sort();
+
   const memberIds = new Set(members.map((m) => m.id));
   const availableUsers = canManage
     ? allUsers.filter((u) => {
         if (memberIds.has(u.id)) return false;
         if (group.is_staff_only && u.role !== 'staff' && u.role !== 'admin') return false;
+        if (deptFilter !== 'all' && (u.department || '').trim() !== deptFilter) return false;
+        if (roleFilter !== 'all' && u.role !== roleFilter) return false;
+        const q = searchTerm.toLowerCase();
         return (
-          u.full_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-          u.email.toLowerCase().includes(searchTerm.toLowerCase()) ||
-          (u.department || '').toLowerCase().includes(searchTerm.toLowerCase())
+          u.full_name.toLowerCase().includes(q) ||
+          u.email.toLowerCase().includes(q) ||
+          (u.department || '').toLowerCase().includes(q) ||
+          (u.designation || '').toLowerCase().includes(q)
         );
       })
     : [];
 
   const pinnedMessages = messages.filter((m) => m.is_pinned);
 
-  // Filter messages when Staff or Admin uses the Chat Search bar
   const displayedMessages =
     canManage && chatSearchQuery.trim()
       ? messages.filter((m) => {
@@ -384,7 +423,6 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
         </div>
 
         <div className="flex items-center gap-2 shrink-0">
-          {/* Search Chat Button (Staff & Admin only) */}
           {canManage && (
             <button
               onClick={() => {
@@ -422,7 +460,7 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
         </div>
       </div>
 
-      {/* Collapsible Chat Search Bar (Staff & Admin only) */}
+      {/* Collapsible Chat Search Bar */}
       {canManage && showChatSearch && (
         <div className="bg-white border-b border-slate-200 px-4 py-2.5 flex items-center gap-2 shadow-sm">
           <Search size={15} className="text-slate-400 shrink-0" />
@@ -469,28 +507,76 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
         </div>
       )}
 
-      {/* Collapsible Member Drawer */}
+      {/* Collapsible Member Drawer with Bulk Department / Role Assignment */}
       {showMembers && !isDirectChat && (
-        <div className="bg-white border-b border-slate-200 p-4 shadow-inner max-h-80 overflow-y-auto space-y-4">
+        <div className="bg-white border-b border-slate-200 p-4 shadow-inner max-h-96 overflow-y-auto space-y-4">
           {canManage && (
-            <div className="bg-slate-50 p-3 rounded-xl border border-slate-200">
-              <p className="text-xs font-bold text-slate-800 mb-2 flex items-center gap-1.5">
-                <UserPlus size={14} />{' '}
-                {group.is_staff_only
-                  ? `Add Faculty/Staff to ${group.name}`
-                  : `Add Students, Parents, or Staff to ${group.name}`}
-              </p>
-              <div className="relative mb-2">
-                <Search size={14} className="absolute left-3 top-2.5 text-slate-400" />
-                <input
-                  type="text"
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                  placeholder="Search by name, username, or department..."
-                  className="w-full pl-8 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs focus:outline-none focus:border-slate-500"
-                />
+            <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 space-y-2.5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                  <UserPlus size={14} />{' '}
+                  {group.is_staff_only
+                    ? `Add Faculty/Staff to ${group.name}`
+                    : `Add Members Individually or by Department`}
+                </p>
+
+                {availableUsers.length > 0 && (
+                  <button
+                    type="button"
+                    disabled={bulkAdding}
+                    onClick={handleBulkAddMatching}
+                    className="flex items-center gap-1.5 bg-emerald-700 hover:bg-emerald-800 text-white px-3 py-1.5 rounded-lg text-[11px] font-bold shadow-sm transition disabled:opacity-50"
+                  >
+                    <UsersRound size={13} />
+                    <span>
+                      {bulkAdding ? 'Adding...' : `+ Add All Matching (${availableUsers.length})`}
+                    </span>
+                  </button>
+                )}
               </div>
-              <div className="max-h-28 overflow-y-auto space-y-1">
+
+              {/* Department, Role & Text Search Filters */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                <select
+                  value={deptFilter}
+                  onChange={(e) => setDeptFilter(e.target.value)}
+                  className="px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-medium focus:outline-none focus:border-slate-500"
+                >
+                  <option value="all">All Departments</option>
+                  {uniqueDepartments.map((dept) => (
+                    <option key={dept} value={dept}>
+                      {dept}
+                    </option>
+                  ))}
+                </select>
+
+                {!group.is_staff_only && (
+                  <select
+                    value={roleFilter}
+                    onChange={(e) => setRoleFilter(e.target.value)}
+                    className="px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-medium focus:outline-none focus:border-slate-500"
+                  >
+                    <option value="all">All Roles</option>
+                    <option value="student">Students Only</option>
+                    <option value="parent">Parents Only</option>
+                    <option value="staff">Staff / Faculty Only</option>
+                  </select>
+                )}
+
+                <div className={`relative ${group.is_staff_only ? 'sm:col-span-2' : ''}`}>
+                  <Search size={13} className="absolute left-2.5 top-2 text-slate-400" />
+                  <input
+                    type="text"
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                    placeholder="Filter by name or ID..."
+                    className="w-full pl-8 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs focus:outline-none focus:border-slate-500"
+                  />
+                </div>
+              </div>
+
+              {/* Matching Unadded Users List */}
+              <div className="max-h-32 overflow-y-auto space-y-1">
                 {availableUsers.length === 0 ? (
                   <p className="text-[11px] text-slate-500 px-1">No matching users left to add.</p>
                 ) : (
@@ -515,6 +601,7 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
             </div>
           )}
 
+          {/* Current Members List */}
           <div>
             <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-2">
               {canManage ? `All Group Members (${members.length})` : 'Group Faculty & Administrators'}
@@ -611,7 +698,6 @@ export default function ChatRoom({ group, currentUser, onGroupUpdated, onGroupDe
                       <Pin size={13} />
                     </button>
                   )}
-                  {/* Staff can delete their own message (or Staff can delete in group); Admin retains copy in Audit Feed */}
                   {canManage && (isAdmin || msg.sender_id === currentUser.id || currentUser.role === 'staff') && (
                     <button
                       onClick={() => handleDeleteMessage(msg)}
